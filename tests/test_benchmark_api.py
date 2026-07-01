@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import AsyncMock, patch
 
-import benchmark_api
+import medical_rag_agent.tests.benchmark_api as benchmark_api
 
 
 class MixedBenchmarkTests(unittest.IsolatedAsyncioTestCase):
