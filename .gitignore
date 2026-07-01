@@ -20,3 +20,17 @@ mlflow.db
 
 # Jupyter
 .ipynb_checkpoints/
+
+
+# Logs
+logs/
+backend/logs/
+*.log
+
+# Ignore database contents
+data_base/knowledge_db/*
+data_base/vector_db/*
+
+# Keep folder placeholders
+!data_base/knowledge_db/.gitkeep
+!data_base/vector_db/.gitkeep
