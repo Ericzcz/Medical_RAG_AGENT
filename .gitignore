@@ -1,0 +1,22 @@
+# environment variables
+.env
+
+# Python virtual environment
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# VS Code local settings
+.vscode/
+
+# MLflow local files
+mlruns/
+mlartifacts/
+mlflow.db
+
+# OS files
+.DS_Store
+
+# Jupyter
+.ipynb_checkpoints/

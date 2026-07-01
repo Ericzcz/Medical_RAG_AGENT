@@ -1,0 +1,163 @@
+services:
+  api:
+    build: .
+    image: week5_docker
+    container_name: week5_api
+    working_dir: /workspace/agent/Project/week5
+    command: >
+      uvicorn app.main:app 
+      --host 0.0.0.0 
+      --port 80 
+      --reload
+      --reload-dir app
+      --reload-exclude logs/*
+      --reload-exclude "*.log"
+      --reload-exclude "__pycache__/*"
+      --reload-exclude "*.pyc"
+    ports:
+      - "8000:80"
+    env_file:
+      - ../.env
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: "6383"
+      REDIS_CACHE_DB: "2"
+      CELERY_BROKER_URL: redis://redis:6383/0
+      CELERY_RESULT_BACKEND: redis://redis:6383/1
+      MILVUS_URI: http://milvus:19530
+      PYTHONDONTWRITEBYTECODE: "1"
+    volumes:
+      - ../..:/workspace/agent
+    depends_on:
+      redis:
+        condition: service_healthy
+      milvus:
+        condition: service_started
+
+  worker:
+    build: .
+    image: week5_docker
+    container_name: week5_worker
+    working_dir: /workspace/agent/Project/week5
+    command: celery -A app.Redis_Celery.celery_app:celery_app worker --loglevel=info --pool=solo
+    env_file:
+      - ../.env
+    environment:
+      CELERY_BROKER_URL: redis://redis:6383/0
+      CELERY_RESULT_BACKEND: redis://redis:6383/1
+      MILVUS_URI: http://milvus:19530
+      PYTHONDONTWRITEBYTECODE: "1"
+    volumes:
+      - ../..:/workspace/agent
+    depends_on:
+      redis:
+        condition: service_healthy
+      milvus:
+        condition: service_started
+
+  redis:
+    image: redis:7
+    container_name: week5_redis
+    command: redis-server --port 6383 --appendonly yes
+    ports:
+      - "6383:6383"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6383", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.18
+    container_name: week5_etcd
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: "1000"
+      ETCD_QUOTA_BACKEND_BYTES: "4294967296"
+      ETCD_SNAPSHOT_COUNT: "50000"
+    command: >
+      etcd
+      -advertise-client-urls=http://127.0.0.1:2379
+      -listen-client-urls=http://0.0.0.0:2379
+      --data-dir=/etcd
+    volumes:
+      - etcd-data:/etcd
+
+  minio:
+    image: minio/minio:latest
+    container_name: week5_minio
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: minio server /minio_data --console-address ":9001"
+    ports:
+      - "9001:9001"
+    volumes:
+      - minio-data:/minio_data
+
+  milvus:
+    image: milvusdb/milvus:v2.5.27
+    container_name: week5_milvus
+    command: ["milvus", "run", "standalone"]
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+    ports:
+      - "19530:19530"
+      - "9091:9091"
+    volumes:
+      - milvus-data:/var/lib/milvus
+    depends_on:
+      - etcd
+      - minio
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: week5_prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      - api
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: week5_grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+  
+  loki:
+    image: grafana/loki:latest
+    container_name: week5_loki
+    ports:
+      - "3100:3100"
+    command: -config.file=/etc/loki/local-config.yaml
+
+  promtail:
+    image: grafana/promtail:latest
+    container_name: week5_promtail
+    volumes:
+      - ./logs:/var/log/week5:ro
+      - ./promtail-config.yml:/etc/promtail/config.yml:ro
+    command: -config.file=/etc/promtail/config.yml
+    depends_on:
+      - loki
+
+volumes:
+  redis-data:
+  etcd-data:
+  minio-data:
+  milvus-data:
+  grafana-data:
