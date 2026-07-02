@@ -21,7 +21,6 @@ mlflow.db
 # Jupyter
 .ipynb_checkpoints/
 
-
 # Logs
 logs/
 backend/logs/

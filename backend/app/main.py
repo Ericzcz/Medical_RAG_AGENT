@@ -11,7 +11,7 @@ from app.Redis_Celery.schemas import QueryRequest, QueryResponse, TaskResponse, 
 from app.Redis_Celery.cache import get_cache, set_cache, make_cache_key, delete_cache
 from app.Redis_Celery.tasks import index_document
 from app.Redis_Celery.celery_app import celery_app
-from app.Redis_Celery.memory import get_recent_messages, append_turn
+from app.Redis_Celery.memory import get_memory_context, save_memory_turn
 
 from prometheus_fastapi_instrumentator import Instrumentator
 
@@ -85,12 +85,9 @@ async def health_check():
 @app.post("/local_query", response_model=QueryResponse)
 async def local_query(req: QueryRequest, request: Request):
     redis_client = request.app.state.redis
-
+    
     if req.session_id:
-        chat_history = await get_recent_messages(
-            redis_client,
-            req.session_id,
-        )
+        chat_history = await get_memory_context(redis_client, req.session_id)
 
         answer = await search_local_knowledge(
             req.query,
@@ -98,11 +95,12 @@ async def local_query(req: QueryRequest, request: Request):
             chat_history=chat_history,
         )
 
-        await append_turn(
+        await save_memory_turn(
             redis_client,
             req.session_id,
             req.query,
             answer,
+            LOCAL_MODEL,
         )
 
         return QueryResponse(answer=answer, mode="local_memory")
