@@ -1,9 +1,13 @@
+name: medical-rag-agent
+
 services:
   api:
-    build: .
-    image: week5_docker
-    container_name: week5_api
-    working_dir: /workspace/agent/Project/week5
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+    image: medical_rag_agent_backend
+    container_name: medical_rag_api
+    working_dir: /workspace/medical_rag_agent/backend
     command: >
       uvicorn app.main:app 
       --host 0.0.0.0 
@@ -25,9 +29,10 @@ services:
       CELERY_BROKER_URL: redis://redis:6383/0
       CELERY_RESULT_BACKEND: redis://redis:6383/1
       MILVUS_URI: http://milvus:19530
+      KNOWLEDGE_BASE_DIR: /workspace/medical_rag_agent/data_base/knowledge_db
       PYTHONDONTWRITEBYTECODE: "1"
     volumes:
-      - ../..:/workspace/agent
+      - ..:/workspace/medical_rag_agent
     depends_on:
       redis:
         condition: service_healthy
@@ -35,10 +40,12 @@ services:
         condition: service_started
 
   worker:
-    build: .
-    image: week5_docker
-    container_name: week5_worker
-    working_dir: /workspace/agent/Project/week5
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+    image: medical_rag_agent_backend
+    container_name: medical_rag_worker
+    working_dir: /workspace/medical_rag_agent/backend
     command: celery -A app.Redis_Celery.celery_app:celery_app worker --loglevel=info --pool=solo
     env_file:
       - ../.env
@@ -46,9 +53,10 @@ services:
       CELERY_BROKER_URL: redis://redis:6383/0
       CELERY_RESULT_BACKEND: redis://redis:6383/1
       MILVUS_URI: http://milvus:19530
+      KNOWLEDGE_BASE_DIR: /workspace/medical_rag_agent/data_base/knowledge_db
       PYTHONDONTWRITEBYTECODE: "1"
     volumes:
-      - ../..:/workspace/agent
+      - ..:/workspace/medical_rag_agent
     depends_on:
       redis:
         condition: service_healthy
@@ -57,7 +65,7 @@ services:
 
   redis:
     image: redis:7
-    container_name: week5_redis
+    container_name: medical_rag_redis
     command: redis-server --port 6383 --appendonly yes
     ports:
       - "6383:6383"
@@ -71,7 +79,7 @@ services:
 
   etcd:
     image: quay.io/coreos/etcd:v3.5.18
-    container_name: week5_etcd
+    container_name: medical_rag_etcd
     environment:
       ETCD_AUTO_COMPACTION_MODE: revision
       ETCD_AUTO_COMPACTION_RETENTION: "1000"
@@ -87,7 +95,7 @@ services:
 
   minio:
     image: minio/minio:latest
-    container_name: week5_minio
+    container_name: medical_rag_minio
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
@@ -99,7 +107,7 @@ services:
 
   milvus:
     image: milvusdb/milvus:v2.5.27
-    container_name: week5_milvus
+    container_name: medical_rag_milvus
     command: ["milvus", "run", "standalone"]
     security_opt:
       - seccomp:unconfined
@@ -117,7 +125,7 @@ services:
 
   prometheus:
     image: prom/prometheus:latest
-    container_name: week5_prometheus
+    container_name: medical_rag_prometheus
     ports:
       - "9090:9090"
     volumes:
@@ -127,7 +135,7 @@ services:
 
   grafana:
     image: grafana/grafana:latest
-    container_name: week5_grafana
+    container_name: medical_rag_grafana
     ports:
       - "3000:3000"
     environment:
@@ -140,16 +148,16 @@ services:
   
   loki:
     image: grafana/loki:latest
-    container_name: week5_loki
+    container_name: medical_rag_loki
     ports:
       - "3100:3100"
     command: -config.file=/etc/loki/local-config.yaml
 
   promtail:
     image: grafana/promtail:latest
-    container_name: week5_promtail
+    container_name: medical_rag_promtail
     volumes:
-      - ./logs:/var/log/week5:ro
+      - ./logs:/var/log/medical_rag:ro
       - ./promtail-config.yml:/etc/promtail/config.yml:ro
     command: -config.file=/etc/promtail/config.yml
     depends_on:

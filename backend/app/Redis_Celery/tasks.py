@@ -9,7 +9,7 @@ setup_logging()
 logger = logging.getLogger(__name__)
 
 @celery_app.task(bind=True)
-@traceable(name="Week5 Build Milvus Index", run_type="chain")
+@traceable(name="Medical RAG Build Milvus Index", run_type="chain")
 def index_document(
     self, 
     collection_name: str = "RAG_collection", 

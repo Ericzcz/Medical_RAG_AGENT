@@ -9,10 +9,10 @@ clients:
   - url: http://loki:3100/loki/api/v1/push
 
 scrape_configs:
-  - job_name: week5-logs
+  - job_name: medical-rag-logs
     static_configs:
       - targets:
           - localhost
         labels:
-          job: week5
-          __path__: /var/log/week5/*.log
+          job: medical_rag
+          __path__: /var/log/medical_rag/*.log
