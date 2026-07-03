@@ -42,8 +42,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Week5_Agent_API",
-    description="Update: Redis and Async.",
+    title="Medical_RAG_Agent_API",
+    description="Medical RAG Agent API with Redis, Celery, Milvus, and observability.",
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -62,7 +62,7 @@ Instrumentator(
 async def root():
     return {
         "status": "ok",
-        "service": "Week5_Agent_API",
+        "service": "Medical_RAG_Agent_API",
         "docs": "/docs",
         "health": "/health",
         "endpoints": [
@@ -271,6 +271,39 @@ async def batch_local_query(req: BatchQueryRequest, request: Request):
 @app.post("/agent_query", response_model=QueryResponse)
 async def agent_query(req: QueryRequest, request: Request):
     redis_client = request.app.state.redis
+
+    if req.session_id:
+        chat_history = await get_memory_context(redis_client, req.session_id)
+
+        try:
+            answer = await run_agent(
+                req.query,
+                model=AGENT_MODEL,
+                chat_history=chat_history,
+            )
+        except RuntimeError as e:
+            logger.exception(
+                "agent query failed",
+                extra={
+                    "scope": AGENT_SCOPE,
+                    "model": AGENT_MODEL,
+                    "query_length": len(req.query),
+                },
+            )
+            raise HTTPException(status_code=400, detail=str(e))
+
+        await save_memory_turn(
+            redis_client,
+            req.session_id,
+            req.query,
+            answer,
+            AGENT_MODEL,
+        )
+
+        return QueryResponse(answer=answer, mode="agent_memory")
+
+
+
     cached = await get_cache(redis_client, req.query, AGENT_SCOPE, AGENT_MODEL)
 
    

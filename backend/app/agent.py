@@ -101,13 +101,29 @@ async def run_agent(
     model: str = "gpt-5.5",
     tool_response_model: str | None = None,
     instructions: str | None = None,
+    chat_history: list[dict] | None = None,
 ) -> str:
     client = wrap_openai(AsyncOpenAI())
     tools = get_tools()
 
+    default_instructions = """
+        你是一个 ReAct 风格的 Agent，可以根据问题选择本地知识库检索或网络搜索工具。
+
+        当调用 search_web 工具时，必须先结合对话历史，将代词、省略表达和上下文相关问题改写成独立、明确的搜索查询。
+        不要把“它”“这个”“上面提到的”“刚才说的”等模糊表达直接传给 search_web。
+
+        当调用 search_local_knowledge 工具时，可以保留用户原始问题，因为本地 RAG 链会结合 chat_history 进行问题改写。
+        """
+
+    final_instructions = instructions or default_instructions
+
     @traceable(run_type="tool", name="Local Knowledge Search")
     async def local_tool(query: str) -> str:
-        return await search_local_knowledge(query, model)
+        return await search_local_knowledge(
+            query, 
+            model,
+            chat_history=chat_history,
+            )
     
     @traceable(run_type="tool", name="Web Search")
     async def search_web_async(query: str) -> str:
@@ -118,12 +134,16 @@ async def run_agent(
         "search_web": search_web_async,
     }
 
-    input_items = [{"role": "user", "content": user_query}]
+    input_items = [
+        *format_chat_history_for_responses(chat_history),
+        {"role": "user", "content": user_query}
+        ]
+    
     response = await client.responses.create(
         model=model,
         tools=tools,
         input=input_items,
-        instructions=instructions,
+        instructions=final_instructions,
     )
 
     while True:
@@ -147,7 +167,7 @@ async def run_agent(
             model=tool_response_model or model,
             tools=tools,
             input=input_items,
-            instructions=instructions,
+            instructions=final_instructions,
         )
 
 
@@ -179,3 +199,25 @@ async def run_agent_batch(
         for query in queries
     ]
     return await asyncio.gather(*tasks)
+
+
+def format_chat_history_for_responses(chat_history: list[dict] | None) -> list[dict]:
+    if not chat_history:
+        return []
+
+    role_map = {
+        "human": "user",
+        "ai": "assistant",
+        "user": "user",
+        "assistant": "assistant",
+        "system": "system",
+    }
+
+    input_items = []
+    for message in chat_history:
+        role = role_map.get(message.get("role"))
+        content = message.get("content")
+        if role and content:
+            input_items.append({"role": role, "content": content})
+
+    return input_items

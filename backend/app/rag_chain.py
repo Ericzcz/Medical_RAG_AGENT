@@ -29,11 +29,18 @@ load_dotenv(find_dotenv(), override=True)
 
 
 def get_project_root() -> Path:
-    return Path(__file__).resolve().parents[3]
+    return Path(__file__).resolve().parents[2]
+
+
+def get_knowledge_base_dir() -> Path:
+    configured_path = os.getenv("KNOWLEDGE_BASE_DIR")
+    if configured_path:
+        return Path(configured_path)
+    return get_project_root() / "data_base" / "knowledge_db"
 
 
 def load_documents() -> List[Document]:
-    folder_path = get_project_root() / "llm-universe" / "data_base" / "knowledge_db"
+    folder_path = get_knowledge_base_dir()
     if not folder_path.is_dir():
         raise RuntimeError(f"Knowledge base directory not found: {folder_path}")
 
@@ -93,7 +100,7 @@ def get_embedding_model() -> OpenAIEmbeddings:
 
 @lru_cache(maxsize=1)
 def get_milvus_client() -> MilvusClient:
-    return MilvusClient(uri="http://milvus:19530")
+    return MilvusClient(uri=os.getenv("MILVUS_URI", "http://milvus:19530"))
 
 
 def batched(items, batch_size: int):
