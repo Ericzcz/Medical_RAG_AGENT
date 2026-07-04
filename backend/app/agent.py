@@ -107,15 +107,19 @@ async def run_agent(
     tools = get_tools()
 
     default_instructions = """
-        你是一个 ReAct 风格的 Agent，可以根据问题选择本地知识库检索或网络搜索工具。
+        你是一个 ReAct 风格的 医疗Agent，可以根据问题选择本地知识库检索或网络搜索工具。
 
         当调用 search_web 工具时，必须先结合对话历史，将代词、省略表达和上下文相关问题改写成独立、明确的搜索查询。
         不要把“它”“这个”“上面提到的”“刚才说的”等模糊表达直接传给 search_web。
 
         当调用 search_local_knowledge 工具时，可以保留用户原始问题，因为本地 RAG 链会结合 chat_history 进行问题改写。
         """
+    long_term_memory_instructions = instructions or ""
+    final_instructions = f"""
+        {default_instructions}
 
-    final_instructions = instructions or default_instructions
+        {long_term_memory_instructions}
+        """
 
     @traceable(run_type="tool", name="Local Knowledge Search")
     async def local_tool(query: str) -> str:

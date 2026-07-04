@@ -7,11 +7,13 @@ from app.agent import run_agent, run_agent_batch
 
 from app.rag_chain import search_local_knowledge, search_local_knowledge_batch
 
-from app.Redis_Celery.schemas import QueryRequest, QueryResponse, TaskResponse, BatchQueryItem, BatchQueryRequest, BatchQueryResponse
+from app.schemas import QueryRequest, QueryResponse, TaskResponse, BatchQueryItem, BatchQueryRequest, BatchQueryResponse
 from app.Redis_Celery.cache import get_cache, set_cache, make_cache_key, delete_cache
 from app.Redis_Celery.tasks import index_document
 from app.Redis_Celery.celery_app import celery_app
-from app.Redis_Celery.memory import get_memory_context, save_memory_turn
+
+from app.short_term_memory import get_memory_context, save_memory_turn
+from app.long_term_memory import get_long_term_context, extract_long_term_memory, save_long_term_memory
 
 from prometheus_fastapi_instrumentator import Instrumentator
 
@@ -275,11 +277,29 @@ async def agent_query(req: QueryRequest, request: Request):
     if req.session_id:
         chat_history = await get_memory_context(redis_client, req.session_id)
 
+        long_term_context = ""
+        if req.user_id:
+            long_term_context = await get_long_term_context(
+                redis_client,
+                req.user_id,
+            )
+        
+        instructions = None
+
+        if long_term_context:
+            instructions = f"""
+                以下是关于用户的长期记忆。它们用于理解用户偏好、项目背景和长期上下文。
+                不要把长期记忆当作医学事实来源；医学事实必须优先基于本地知识库、可靠搜索结果或模型已知医学常识。
+
+                {long_term_context}
+                """
+
         try:
             answer = await run_agent(
                 req.query,
                 model=AGENT_MODEL,
                 chat_history=chat_history,
+                instructions = instructions,
             )
         except RuntimeError as e:
             logger.exception(
@@ -299,6 +319,23 @@ async def agent_query(req: QueryRequest, request: Request):
             answer,
             AGENT_MODEL,
         )
+        
+        if req.user_id:
+            try:
+                memories = await extract_long_term_memory(
+                    user_query=req.query,
+                    assistant_answer=answer,
+                    model=AGENT_MODEL,
+                )
+
+                await save_long_term_memory(
+                    redis_client=redis_client,
+                    user_id=req.user_id,
+                    session_id=req.session_id,
+                    memories=memories,
+                )
+            except Exception:
+                logger.exception("Failed to extract or save long-term memory")
 
         return QueryResponse(answer=answer, mode="agent_memory")
 

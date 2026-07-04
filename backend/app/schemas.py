@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 class QueryRequest(BaseModel):
     query: str = Field(..., description="The user question to ask.")
     session_id: str | None = Field(default=None, description="Conversation session id.")
+    user_id: str | None = Field(default=None, description="User id.")
 
 class QueryResponse(BaseModel):
     answer: str
