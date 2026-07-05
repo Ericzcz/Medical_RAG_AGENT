@@ -76,30 +76,6 @@ async def extract_long_term_memory(
 def make_long_term_memory_key(user_id: str) -> str:
     return f"user:{user_id}:long_term_memory"
     
-
-
-async def save_long_term_memory(
-    redis_client,
-    user_id: str,
-    memories:list[ExtractedMemory],
-    session_id: str | None = None,
-    max_memories: int = 100,
-) -> None:
-    if not memories:
-        return
-    
-    key = make_long_term_memory_key(user_id)
-
-    for memory in memories:
-        record = memory.model_dump()
-        record["user_id"] = user_id
-        record["source_session_id"] = session_id
-        record["created_at"] = datetime.now(timezone.utc).isoformat()
-
-        await redis_client.rpush(key, json.dumps(record, ensure_ascii=False))
-    
-    await redis_client.ltrim(key, -max_memories, -1)
-
 async def get_long_term_memory(
     redis_client,
     user_id: str,
@@ -144,5 +120,122 @@ async def get_long_term_context(
         context.append(f"- [{memory_type}, importance={importance}] {content}")
 
     return "\n".join(context)
+
+async def is_duplicate_memory(
+    new_memory: ExtractedMemory,
+    existing_memories: list[dict],
+    model: str,
+) -> bool:
+    if not existing_memories:
+        return False
+    
+    existing_text = "\n".join(
+        f"{index + 1}. [{memory.get('memory_type', 'fact')}] {memory.get('content', '')}"
+        for index, memory in enumerate(existing_memories)
+        if memory.get("content")
+    )
+
+    if not existing_text:
+        return False
+    
+    prompt = f"""
+        你是长期记忆去重器。
+
+        判断“新记忆”是否已经被“已有记忆”表达过。
+        只要语义基本相同，就认为重复。
+        不要因为措辞不同就认为不是重复。
+
+        判断标准：
+        1. 如果新记忆只是已有记忆的改写、同义表达或更笼统表达，返回 true。
+        2. 如果新记忆包含已有记忆没有的新偏好、新事实或新项目背景，返回 false。
+        3. 不要因为 memory_type 不同就直接认为不重复，重点看 content 语义。
+
+        已有记忆：
+        {existing_text}
+
+        新记忆：
+        [{new_memory.memory_type}] {new_memory.content}
+
+        请只返回 JSON，不要解释。
+        如果重复，返回：
+        {{"is_duplicate": true}}
+
+        如果不重复，返回：
+        {{"is_duplicate": false}}
+        """
+
+    llm = ChatOpenAI(model=model, temperature=0)
+    result = await llm.ainvoke(prompt)
+
+    try:
+        data = json.loads(result.content)
+    except json.JSONDecodeError:
+        return False
+
+    return bool(data.get("is_duplicate", False))
+
+async def save_long_term_memory(
+    redis_client,
+    user_id: str,
+    memories:list[ExtractedMemory],
+    model: str,
+    session_id: str | None = None,
+    max_memories: int = 100,
+) -> dict:
+    
+    stats = {
+        "extracted": len(memories),
+        "saved": 0,
+        "skipped_duplicates": 0,
+        "skipped_semantic_duplicates": 0,
+    }
+        
+    if not memories:
+        return stats
+    
+    key = make_long_term_memory_key(user_id)
+
+    existing_memories = await get_long_term_memory(
+        redis_client=redis_client,
+        user_id=user_id,
+        limit=max_memories,
+    )
+    existing_contents = {
+        memory.get("content")
+        for memory in existing_memories if memory.get("content")
+    }
+
+    for memory in memories:
+        if memory.content in existing_contents:
+            stats["skipped_duplicates"] += 1
+            continue
+        
+        is_duplicate = await is_duplicate_memory(
+            memory, 
+            existing_memories, 
+            model,
+        )
+            
+        if is_duplicate:
+            stats["skipped_semantic_duplicates"] += 1
+            continue
+
+        record = memory.model_dump()
+        record["user_id"] = user_id
+        record["source_session_id"] = session_id
+        record["created_at"] = datetime.now(timezone.utc).isoformat()
+
+        
+        await redis_client.rpush(key, json.dumps(record, ensure_ascii=False))
+        stats["saved"] += 1
+        existing_contents.add(memory.content)
+        existing_memories.append(record)
+    
+    if stats["saved"] > 0:
+        await redis_client.ltrim(key, -max_memories, -1)
+
+    return stats
+
+
 
 

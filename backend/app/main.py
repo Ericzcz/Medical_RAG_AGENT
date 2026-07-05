@@ -26,6 +26,8 @@ LOCAL_MODEL = "gpt-5.5"
 AGENT_SCOPE = "agent"
 AGENT_MODEL = "gpt-5.5"
 
+MEMORY_MODEL = "gpt-5.5"
+
 setup_logging()
 logger = logging.getLogger(__name__)
 
@@ -325,15 +327,29 @@ async def agent_query(req: QueryRequest, request: Request):
                 memories = await extract_long_term_memory(
                     user_query=req.query,
                     assistant_answer=answer,
-                    model=AGENT_MODEL,
+                    model=MEMORY_MODEL,
                 )
 
-                await save_long_term_memory(
+                memory_stats = await save_long_term_memory(
                     redis_client=redis_client,
                     user_id=req.user_id,
                     session_id=req.session_id,
                     memories=memories,
+                    model=MEMORY_MODEL,
                 )
+
+                logger.info(
+                    "long-term memory processed",
+                    extra={
+                        "user_id": req.user_id,
+                        "session_id": req.session_id,
+                        "extracted": memory_stats["extracted"],
+                        "saved": memory_stats["saved"],
+                        "skipped_duplicates": memory_stats["skipped_duplicates"],
+                        "skipped_semantic_duplicates": memory_stats["skipped_semantic_duplicates"],
+                    },
+                )
+
             except Exception:
                 logger.exception("Failed to extract or save long-term memory")
 

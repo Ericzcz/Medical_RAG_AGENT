@@ -28,6 +28,7 @@ async def main():
         user_id="eric",
         session_id="test-session",
         memories=memories,
+        model="gpt-4o-mini"
     )
 
     # for memory in memories:
