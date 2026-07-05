@@ -2,6 +2,7 @@ import json
 from langchain_openai import ChatOpenAI
 from app.schemas import ExtractedMemory
 from datetime import datetime, timezone
+from app.schemas import MemoryUpdateDecision
 
 MEMORY_EXTRACT_PROMPT = """
     你是一个长期记忆提取器。
@@ -82,12 +83,18 @@ async def get_long_term_memory(
     limit: int = 20,
 ) -> list[dict]:
     key = make_long_term_memory_key(user_id)
+
+    total = await redis_client.llen(key)
+    start_index = max(total - limit, 0)
+
     raw_items = await redis_client.lrange(key, -limit, -1)
 
     memories = []
-    for item in raw_items:
+    for offset, item in enumerate(raw_items):
         try:
-            memories.append(json.loads(item))
+            memory = json.loads(item)
+            memory["_index"] = start_index + offset
+            memories.append(memory)
         except json.JSONDecodeError:
             continue
     
@@ -121,13 +128,66 @@ async def get_long_term_context(
 
     return "\n".join(context)
 
-async def is_duplicate_memory(
+# async def is_duplicate_memory(
+#     new_memory: ExtractedMemory,
+#     existing_memories: list[dict],
+#     model: str,
+# ) -> bool:
+#     if not existing_memories:
+#         return False
+    
+#     existing_text = "\n".join(
+#         f"{index + 1}. [{memory.get('memory_type', 'fact')}] {memory.get('content', '')}"
+#         for index, memory in enumerate(existing_memories)
+#         if memory.get("content")
+#     )
+
+#     if not existing_text:
+#         return False
+    
+#     prompt = f"""
+#         你是长期记忆去重器。
+
+#         判断“新记忆”是否已经被“已有记忆”表达过。
+#         只要语义基本相同，就认为重复。
+#         不要因为措辞不同就认为不是重复。
+
+#         判断标准：
+#         1. 如果新记忆只是已有记忆的改写、同义表达或更笼统表达，返回 true。
+#         2. 如果新记忆包含已有记忆没有的新偏好、新事实或新项目背景，返回 false。
+#         3. 不要因为 memory_type 不同就直接认为不重复，重点看 content 语义。
+
+#         已有记忆：
+#         {existing_text}
+
+#         新记忆：
+#         [{new_memory.memory_type}] {new_memory.content}
+
+#         请只返回 JSON，不要解释。
+#         如果重复，返回：
+#         {{"is_duplicate": true}}
+
+#         如果不重复，返回：
+#         {{"is_duplicate": false}}
+#         """
+
+#     llm = ChatOpenAI(model=model, temperature=0)
+#     result = await llm.ainvoke(prompt)
+
+#     try:
+#         data = json.loads(result.content)
+#     except json.JSONDecodeError:
+#         return False
+
+#     return bool(data.get("is_duplicate", False))
+
+async def decide_memory_update(
     new_memory: ExtractedMemory,
     existing_memories: list[dict],
     model: str,
-) -> bool:
+) -> MemoryUpdateDecision:
     if not existing_memories:
-        return False
+        return MemoryUpdateDecision(action="create")
     
     existing_text = "\n".join(
         f"{index + 1}. [{memory.get('memory_type', 'fact')}] {memory.get('content', '')}"
@@ -136,19 +196,31 @@ async def is_duplicate_memory(
     )
 
     if not existing_text:
-        return False
+        return MemoryUpdateDecision(action="create")
     
     prompt = f"""
-        你是长期记忆去重器。
+        你是长期记忆更新决策器。
 
-        判断“新记忆”是否已经被“已有记忆”表达过。
-        只要语义基本相同，就认为重复。
-        不要因为措辞不同就认为不是重复。
+        你的任务是判断一条新长期记忆应该如何处理。
 
-        判断标准：
-        1. 如果新记忆只是已有记忆的改写、同义表达或更笼统表达，返回 true。
-        2. 如果新记忆包含已有记忆没有的新偏好、新事实或新项目背景，返回 false。
-        3. 不要因为 memory_type 不同就直接认为不重复，重点看 content 语义。
+        你只能选择三种动作之一：
+
+        1. skip
+        含义：新记忆和已有记忆表达的是同一件事，没有任何值得补充的新信息。
+
+        2. merge
+        含义：新记忆和某条已有记忆属于同一主题，并且新记忆补充了有价值的新细节。
+        你需要返回 target_index，并给出合并后的 merged_content。
+
+        3. create
+        含义：新记忆表达的是新的长期偏好、项目背景、稳定事实或纠正信息，应该新增保存。
+
+        判断原则：
+        - 不要因为措辞不同就 create。
+        - 不要因为新记忆更具体就 create；如果它是在补充已有记忆，应该 merge。
+        - 如果新记忆包含独立的新主题，才 create。
+        - 如果不确定，优先 create，避免丢失信息。
+        - 不要保存敏感医疗个人信息，除非用户明确要求长期保存。
 
         已有记忆：
         {existing_text}
@@ -157,22 +229,36 @@ async def is_duplicate_memory(
         [{new_memory.memory_type}] {new_memory.content}
 
         请只返回 JSON，不要解释。
-        如果重复，返回：
-        {{"is_duplicate": true}}
 
-        如果不重复，返回：
-        {{"is_duplicate": false}}
+        如果完全重复：
+        {{"action": "skip"}}
+
+        如果应该合并：
+        {{"action": "merge", "target_index": 0, "merged_content": "合并后的记忆内容"}}
+
+        如果应该新增：
+        {{"action": "create"}}
         """
-
+    
     llm = ChatOpenAI(model=model, temperature=0)
     result = await llm.ainvoke(prompt)
 
     try:
         data = json.loads(result.content)
     except json.JSONDecodeError:
-        return False
+        return MemoryUpdateDecision(action="create")
 
-    return bool(data.get("is_duplicate", False))
+    try:
+        decision = MemoryUpdateDecision(**data)
+    except Exception:
+        return MemoryUpdateDecision(action="create")
+    
+    if decision.action == "merge":
+        if decision.target_index is None or not decision.merged_content:
+            return MemoryUpdateDecision(action="create")
+        
+    return decision
+
 
 async def save_long_term_memory(
     redis_client,
@@ -186,7 +272,8 @@ async def save_long_term_memory(
     stats = {
         "extracted": len(memories),
         "saved": 0,
-        "skipped_duplicates": 0,
+        "merged": 0,
+        "skipped_exact_duplicates": 0,
         "skipped_semantic_duplicates": 0,
     }
         
@@ -207,19 +294,55 @@ async def save_long_term_memory(
 
     for memory in memories:
         if memory.content in existing_contents:
-            stats["skipped_duplicates"] += 1
+            stats["skipped_exact_duplicates"] += 1
             continue
         
-        is_duplicate = await is_duplicate_memory(
-            memory, 
-            existing_memories, 
-            model,
+        decision = await decide_memory_update(
+            new_memory=memory,
+            existing_memories=existing_memories,
+            model=model,
         )
-            
-        if is_duplicate:
+
+        if decision.action == "skip":
             stats["skipped_semantic_duplicates"] += 1
             continue
+        
+        if decision.action == "merge":
+            target_index = decision.target_index
 
+            target_memory = next(
+                (
+                    item for item in existing_memories
+                    if item.get("_index") == target_index
+                ),
+                None,
+            )
+
+            if target_memory is None or not decision.merged_content:
+                decision.action = "create"
+            else:
+                updated_record = {
+                    **target_memory,
+                    "content": decision.merged_content,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+
+                updated_record.pop("_index", None)
+
+                await redis_client.lset(
+                    key,
+                    target_index,
+                    json.dumps(updated_record, ensure_ascii=False),
+                )
+
+                stats["merged"] += 1
+
+                target_memory["content"] = decision.merged_content
+                existing_contents.add(decision.merged_content)
+
+                continue
+        
+            
         record = memory.model_dump()
         record["user_id"] = user_id
         record["source_session_id"] = session_id
@@ -227,8 +350,11 @@ async def save_long_term_memory(
 
         
         await redis_client.rpush(key, json.dumps(record, ensure_ascii=False))
+
         stats["saved"] += 1
         existing_contents.add(memory.content)
+        
+        record["_index"] = len(existing_memories)
         existing_memories.append(record)
     
     if stats["saved"] > 0:

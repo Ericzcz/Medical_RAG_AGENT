@@ -341,11 +341,12 @@ async def agent_query(req: QueryRequest, request: Request):
                 logger.info(
                     "long-term memory processed",
                     extra={
-                        "user_id": req.user_id,
+                       "user_id": req.user_id,
                         "session_id": req.session_id,
                         "extracted": memory_stats["extracted"],
                         "saved": memory_stats["saved"],
-                        "skipped_duplicates": memory_stats["skipped_duplicates"],
+                        "merged": memory_stats["merged"],
+                        "skipped_exact_duplicates": memory_stats["skipped_exact_duplicates"],
                         "skipped_semantic_duplicates": memory_stats["skipped_semantic_duplicates"],
                     },
                 )
