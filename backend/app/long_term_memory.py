@@ -74,16 +74,40 @@ async def extract_long_term_memory(
 
     return memories
 
-def make_long_term_memory_key(user_id: str) -> str:
-    return f"user:{user_id}:long_term_memory"
-    
-async def get_long_term_memory(
+def make_global_memory_key(user_id: str) -> str:
+    return f"user:{user_id}:global_memory"
+
+def make_retrievable_memory_key(user_id: str) -> str:
+    return f"user:{user_id}:retrievable_memory"
+
+def get_memory_storage_key(user_id: str, memory: dict | ExtractedMemory) -> str:
+    if is_global_memory(memory):
+        return make_global_memory_key(user_id)
+
+    return make_retrievable_memory_key(user_id)
+
+def is_global_memory(memory: dict | ExtractedMemory) -> bool:
+    memory_type = (
+        memory.memory_type
+        if isinstance(memory, ExtractedMemory)
+        else memory.get("memory_type")
+    )
+    return memory_type in {"preference", "correction"}
+
+
+def is_retrievable_memory(memory: dict | ExtractedMemory) -> bool:
+    memory_type = (
+        memory.memory_type
+        if isinstance(memory, ExtractedMemory)
+        else memory.get("memory_type")
+    )
+    return memory_type in {"project", "fact"}
+
+async def get_memories_from_key(
     redis_client,
-    user_id: str,
+    key: str,
     limit: int = 20,
 ) -> list[dict]:
-    key = make_long_term_memory_key(user_id)
-
     total = await redis_client.llen(key)
     start_index = max(total - limit, 0)
 
@@ -97,8 +121,23 @@ async def get_long_term_memory(
             memories.append(memory)
         except json.JSONDecodeError:
             continue
-    
+
     return memories
+
+async def get_global_memories(redis_client, user_id: str, limit: int = 20) -> list[dict]:
+    return await get_memories_from_key(
+        redis_client,
+        make_global_memory_key(user_id),
+        limit=limit,
+    )
+
+
+async def get_retrievable_memories(redis_client, user_id: str, limit: int = 20) -> list[dict]:
+    return await get_memories_from_key(
+        redis_client,
+        make_retrievable_memory_key(user_id),
+        limit=limit,
+    )
 
 
 async def get_long_term_context(
@@ -106,26 +145,38 @@ async def get_long_term_context(
     user_id: str,
     limit: int = 20,
 ) -> str:
-    memories = await get_long_term_memory(
-        redis_client=redis_client,
-        user_id=user_id,
+    global_memories = await get_global_memories(
+        redis_client,
+        user_id,
         limit=limit,
-        )
+    )
+
+    retrievable_memories = await get_retrievable_memories(
+        redis_client,
+        user_id,
+        limit=limit,
+    )
     
-    if not memories:
-        return ""
-    
-    context = ["长期记忆:"]
+    context = []
 
-    for memory in memories:
-        memory_type = memory.get("memory_type", "fact")
-        content = memory.get("content", "")
-        importance = memory.get("importance", 1)
+    if global_memories:
+        context.append("全局长期记忆：")
+        for memory in global_memories:
+            content = memory.get("content")
+            if content:
+                context.append(
+                    f"- [{memory.get('memory_type')}, importance={memory.get('importance', 1)}] {content}"
+                )
 
-        if not content:
-            continue
-
-        context.append(f"- [{memory_type}, importance={importance}] {content}")
+    if retrievable_memories:
+        context.append("")
+        context.append("相关长期记忆：")
+        for memory in retrievable_memories:
+            content = memory.get("content")
+            if content:
+                context.append(
+                    f"- [{memory.get('memory_type')}, importance={memory.get('importance', 1)}] {content}"
+                )
 
     return "\n".join(context)
 
@@ -229,19 +280,21 @@ async def save_long_term_memory(
     if not memories:
         return stats
     
-    key = make_long_term_memory_key(user_id)
-
-    existing_memories = await get_long_term_memory(
-        redis_client=redis_client,
-        user_id=user_id,
-        limit=max_memories,
-    )
-    existing_contents = {
-        memory.get("content")
-        for memory in existing_memories if memory.get("content")
-    }
+    
 
     for memory in memories:
+        key = get_memory_storage_key(user_id, memory)
+
+        existing_memories = await get_memories_from_key(
+            redis_client=redis_client,
+            key=key,
+            limit=max_memories,
+        )
+        existing_contents = {
+            memory.get("content")
+            for memory in existing_memories if memory.get("content")
+        }
+
         if memory.content in existing_contents:
             stats["skipped_exact_duplicates"] += 1
             continue
@@ -297,8 +350,9 @@ async def save_long_term_memory(
         record["source_session_id"] = session_id
         record["created_at"] = datetime.now(timezone.utc).isoformat()
 
-        
         await redis_client.rpush(key, json.dumps(record, ensure_ascii=False))
+
+        await redis_client.ltrim(key, -max_memories, -1)
 
         stats["saved"] += 1
         existing_contents.add(memory.content)
@@ -306,8 +360,6 @@ async def save_long_term_memory(
         record["_index"] = len(existing_memories)
         existing_memories.append(record)
     
-    if stats["saved"] > 0:
-        await redis_client.ltrim(key, -max_memories, -1)
 
     return stats
 
