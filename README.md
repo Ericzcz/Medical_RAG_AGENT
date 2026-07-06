@@ -1,142 +1,288 @@
-# Week5 Agent API
+# Medical RAG Agent
 
-Week5 在 Week4 的 FastAPI + Redis + Celery + Milvus 基础上加入了可观测性：
+Medical RAG Agent is a FastAPI-based retrieval-augmented generation system with a ReAct-style agent, local medical knowledge retrieval, web search, Redis-backed memory, Celery background tasks, Milvus vector search, and observability through Prometheus, Grafana, Loki, and Promtail.
 
-- Prometheus 采集 FastAPI 和 Milvus 指标
-- Grafana 可视化指标
-- JSON 日志写入 `logs/app.log`
-- Promtail 采集日志并推送到 Loki
-- Grafana 查询 Loki 日志
+The main user-facing endpoint is `/agent_query`. It can combine short-term session memory, long-term user memory, local RAG retrieval, and web search. The `/local_query` endpoint is kept as a direct local RAG interface for debugging, benchmarking, and service-level reuse.
 
-整体链路：
+## Features
 
-```text
-FastAPI API
-  ├─ /metrics -> Prometheus -> Grafana
-  └─ logs/app.log -> Promtail -> Loki -> Grafana
-```
+- FastAPI API service with Swagger docs and Prometheus metrics
+- ReAct-style Agent that can call local knowledge search and web search tools
+- Local medical RAG retrieval backed by Milvus
+- Redis cache for stateless query results
+- Redis short-term memory scoped by `session_id`
+- Redis long-term memory scoped by `user_id`
+- LLM-based long-term memory extraction and `skip / merge / create` updates
+- Celery worker for background indexing tasks
+- JSON logging to stdout and `backend/logs/app.log`
+- Prometheus + Grafana metrics dashboards
+- Loki + Promtail log aggregation
 
-## 服务组成
+## Services
 
-| 服务 | 作用 | 本机地址 |
+| Service | Purpose | Local Address |
 | --- | --- | --- |
-| `api` | FastAPI 接口服务 | http://127.0.0.1:8000 |
-| `worker` | Celery 后台任务 | compose 内部服务 |
-| `redis` | 缓存 + Celery broker/backend | `127.0.0.1:6383` |
-| `milvus` | 向量数据库 | `127.0.0.1:19530` |
-| `minio` | Milvus 对象存储 | http://127.0.0.1:9001 |
-| `prometheus` | 指标采集 | http://127.0.0.1:9090 |
-| `grafana` | 指标和日志可视化 | http://127.0.0.1:3000 |
-| `loki` | 日志存储 | http://127.0.0.1:3100 |
-| `promtail` | 日志采集 | compose 内部服务 |
+| `api` | FastAPI API service | http://127.0.0.1:8000 |
+| `worker` | Celery background worker | compose internal |
+| `redis` | Cache, Celery broker/backend, memory storage | `127.0.0.1:6383` |
+| `milvus` | Vector database | `127.0.0.1:19530` |
+| `minio` | Milvus object storage | http://127.0.0.1:9001 |
+| `prometheus` | Metrics collection | http://127.0.0.1:9090 |
+| `grafana` | Metrics and log visualization | http://127.0.0.1:3000 |
+| `loki` | Log storage API | http://127.0.0.1:3100 |
+| `promtail` | Log collector | compose internal |
 
-Grafana 默认账号：
+Grafana default login:
 
 ```text
 admin / admin
 ```
 
-## 启动
+## Quick Start
 
-先确认 `Project/.env` 已配置 OpenAI、Tavily、LangSmith 等项目需要的环境变量。
+Create `.env` in the project root with the required OpenAI, Tavily, and LangSmith variables.
 
-```bash
-cd /Users/eric_zcz/Desktop/Eric_Project/agent/Project/week5
-docker compose up --build
-```
-
-后台启动：
+Start all services:
 
 ```bash
+cd /Users/eric_zcz/Desktop/Eric_Project/agent/medical_rag_agent/backend
 docker compose up --build -d
 ```
 
-查看服务状态：
+Check containers:
 
 ```bash
 docker compose ps
 ```
 
-查看 API 日志：
+Check API logs:
 
 ```bash
-docker compose logs -f api
+docker logs medical_rag_api
 ```
 
-停止服务：
+Open Swagger docs:
+
+```text
+http://127.0.0.1:8000/docs
+```
+
+Stop services:
 
 ```bash
 docker compose down
 ```
 
-## API 地址
+## API Endpoints
 
-常用页面：
-
-- API root: http://127.0.0.1:8000/
-- Swagger docs: http://127.0.0.1:8000/docs
-- Health check: http://127.0.0.1:8000/health
-- Metrics: http://127.0.0.1:8000/metrics
-
-接口列表：
-
-| Method | Path | 说明 |
+| Method | Path | Description |
 | --- | --- | --- |
-| `GET` | `/health` | 健康检查 |
-| `POST` | `/local_query` | 本地知识库问答 |
-| `POST` | `/batch_local_query` | 批量本地知识库问答 |
-| `POST` | `/agent_query` | Agent 问答 |
-| `POST` | `/batch_agent_query` | 批量 Agent 问答 |
-| `DELETE` | `/cache` | 删除指定缓存 |
-| `POST` | `/index` | 提交 Milvus 索引构建任务 |
-| `GET` | `/tasks/{task_id}` | 查询 Celery 任务状态 |
+| `GET` | `/health` | Health check |
+| `POST` | `/local_query` | Direct local medical RAG query |
+| `POST` | `/batch_local_query` | Batch local RAG queries |
+| `POST` | `/agent_query` | Main Agent query endpoint |
+| `POST` | `/batch_agent_query` | Batch Agent queries |
+| `DELETE` | `/cache` | Delete cached response |
+| `POST` | `/index` | Submit Milvus indexing task |
+| `GET` | `/tasks/{task_id}` | Query Celery task status |
+| `GET` | `/metrics` | Prometheus metrics |
 
-示例：
+Health check:
 
 ```bash
 curl http://127.0.0.1:8000/health
 ```
 
+Stateless local RAG query:
+
 ```bash
 curl -X POST http://127.0.0.1:8000/local_query \
   -H "Content-Type: application/json" \
-  -d '{"query":"什么是 RAG？"}'
+  -d '{
+    "query": "什么是 RAG？"
+  }'
 ```
 
+Agent query with short-term and long-term memory:
+
 ```bash
-curl -X POST http://127.0.0.1:8000/batch_local_query \
+curl -X POST http://127.0.0.1:8000/agent_query \
   -H "Content-Type: application/json" \
-  -d '{"queries":["什么是 RAG？","什么是梯度下降？"]}'
+  -d '{
+    "query": "以后回答我项目相关问题时，请默认用中文，并一步一步教我。",
+    "session_id": "demo_session_1",
+    "user_id": "demo_user"
+  }'
 ```
+
+Submit indexing task:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/index
 ```
 
-## Prometheus 指标
+## Memory Architecture
 
-FastAPI 使用 `prometheus-fastapi-instrumentator` 自动暴露 HTTP 指标，不需要在每个接口手动 `.inc()`。
+This project implements both short-term and long-term memory.
 
-本机验证：
+Short-term memory is scoped by `session_id`. It helps the Agent understand follow-up questions, pronouns, and context within the same conversation.
 
-```bash
-curl http://127.0.0.1:8000/metrics
+Long-term memory is scoped by `user_id`. It stores durable user preferences, project facts, stable context, and corrections across sessions.
+
+### Short-Term Memory
+
+Short-term memory is stored in Redis DB 2.
+
+Each session stores recent user/assistant turns in a Redis List:
+
+```text
+user:chat:{session_id}:messages
 ```
 
-Prometheus 配置文件是 `prometheus.yml`，当前采集：
+When the message count exceeds the configured sliding window, older messages are summarized and moved into:
 
-- `week5-api`: `api:80/metrics`
+```text
+user:chat:{session_id}:summary
+```
+
+At query time, the system builds memory context with:
+
+```text
+summary + recent messages
+```
+
+This keeps prompts efficient while preserving the important context from earlier turns.
+
+### Long-Term Memory
+
+Long-term memory is also stored in Redis DB 2 and keyed by user:
+
+```text
+user:{user_id}:long_term_memory
+```
+
+After each `/agent_query` response, the system runs a memory extractor over the current user query and assistant answer. The extractor only keeps durable information such as:
+
+- User preferences
+- Project background
+- Stable facts
+- Corrections to assistant behavior
+
+It avoids one-off questions, temporary test data, session IDs, ordinary technical explanations, and sensitive medical personal information unless the user explicitly asks to save it.
+
+### Long-Term Memory Update Policy
+
+Each candidate memory is passed into an LLM-based update decision step:
+
+```text
+skip   -> the memory is fully duplicated, so it is ignored
+merge  -> the memory extends an existing memory, so the old Redis List item is updated with lset
+create -> the memory is new, so it is appended with rpush
+```
+
+The save layer tracks:
+
+```text
+extracted
+saved
+merged
+skipped_exact_duplicates
+skipped_semantic_duplicates
+```
+
+This prevents unbounded duplicate growth while allowing useful new details to refine existing memories.
+
+### Memory Flow
+
+```text
+User query
+  ↓
+Load short-term memory by session_id
+  ↓
+Load long-term memory by user_id
+  ↓
+Agent answers using memory context, local RAG, and web search
+  ↓
+Save current turn to short-term memory
+  ↓
+Extract long-term memory candidates
+  ↓
+Decide skip / merge / create
+  ↓
+Update Redis long-term memory
+```
+
+## Memory Testing
+
+Use a fresh `user_id` when testing long-term memory so previous memories do not affect results.
+
+Create a long-term preference:
+
+```bash
+curl -X POST http://127.0.0.1:8000/agent_query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "以后回答我项目相关问题时，请默认用中文，并一步一步教我。",
+    "session_id": "memory_create_1",
+    "user_id": "memory_demo_user"
+  }'
+```
+
+Merge additional detail into that preference:
+
+```bash
+curl -X POST http://127.0.0.1:8000/agent_query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "之后讲项目代码的时候，请先讲背景和整体流程，再进入具体函数。",
+    "session_id": "memory_merge_1",
+    "user_id": "memory_demo_user"
+  }'
+```
+
+Verify Redis long-term memory:
+
+```bash
+docker exec medical_rag_redis redis-cli -p 6383 -n 2 \
+  LRANGE user:memory_demo_user:long_term_memory 0 -1
+```
+
+Verify short-term messages:
+
+```bash
+docker exec medical_rag_redis redis-cli -p 6383 -n 2 \
+  LRANGE user:chat:memory_create_1:messages 0 -1
+```
+
+Verify short-term summary:
+
+```bash
+docker exec medical_rag_redis redis-cli -p 6383 -n 2 \
+  GET user:chat:memory_create_1:summary
+```
+
+## Observability
+
+### Prometheus
+
+FastAPI exposes metrics at:
+
+```text
+http://127.0.0.1:8000/metrics
+```
+
+Prometheus targets are configured in `backend/prometheus.yml`:
+
+- `medical-rag-api`: `api:80/metrics`
 - `milvus`: `milvus:9091`
 
-打开 Prometheus target 页面：
+Open Prometheus targets:
 
 ```text
 http://127.0.0.1:9090/targets
 ```
 
-`week5-api` 和 `milvus` 应该是 `UP`。
-
-常用 PromQL：
+Useful PromQL:
 
 ```promql
 up
@@ -155,131 +301,91 @@ sum by (handler, method, status) (
 ```promql
 histogram_quantile(
   0.95,
-  sum by (le) (
-    rate(http_request_duration_highr_seconds_bucket[5m])
-  )
-)
-```
-
-```promql
-histogram_quantile(
-  0.95,
   sum by (le, handler) (
     rate(http_request_duration_seconds_bucket[5m])
   )
 )
 ```
 
-注意：Grafana 的 Explore 里如果使用完整 PromQL，建议切到 `Code` 模式，不要把 `sum(rate(...))` 填进 Builder 的 `Metric` 输入框。
+### Grafana
 
-## Grafana 指标可视化
-
-打开：
+Open Grafana:
 
 ```text
 http://127.0.0.1:3000
 ```
 
-添加 Prometheus data source：
+Prometheus data source:
 
 ```text
 http://prometheus:9090
 ```
 
-推荐先做几个面板：
-
-- API 请求速率：`sum by (handler) (rate(http_requests_total[5m]))`
-- API 状态码：`sum by (status) (rate(http_requests_total[5m]))`
-- API p95 延迟：使用 `histogram_quantile(0.95, ...)`
-- 服务存活：`up`
-
-如果图表不更新，先检查右上角时间范围是否是 `Last 5 minutes` 或 `Last 15 minutes`，再确认 Prometheus target 是 `UP`。
-
-## 日志系统
-
-日志配置在：
-
-```text
-app/logging_config.py
-```
-
-日志会同时输出到：
-
-- 容器 stdout
-- `Project/week5/logs/app.log`
-
-当前关键日志点：
-
-- `local_query` / `agent_query`: cache hit、cache miss、failed
-- `batch_local_query` / `batch_agent_query`: total、cache_hits、cache_misses、failed
-- `DELETE /cache`: cache delete requested
-- `POST /index`: index task submitted / submit failed
-- Celery `index_document`: started、completed、failed
-
-日志不会记录完整 query，只记录 `query_length`、`scope`、`model` 等字段，避免把用户输入直接写进日志。
-
-本机查看日志文件：
-
-```bash
-tail -f logs/app.log
-```
-
-## Loki + Promtail
-
-Promtail 配置文件：
-
-```text
-promtail-config.yml
-```
-
-它会读取：
-
-```text
-Project/week5/logs/*.log
-```
-
-在 Promtail 容器内对应：
-
-```text
-/var/log/week5/*.log
-```
-
-然后推送到 Loki：
-
-```text
-http://loki:3100/loki/api/v1/push
-```
-
-Grafana 添加 Loki data source：
+Loki data source:
 
 ```text
 http://loki:3100
 ```
 
-常用 LogQL：
+Recommended panels:
+
+- API request rate
+- API status code distribution
+- API p95 latency
+- Service health with `up`
+- Long-term memory logs filtered by `long-term memory processed`
+
+### Logs With Loki + Promtail
+
+Application logs are written to:
+
+```text
+backend/logs/app.log
+```
+
+Promtail reads:
+
+```text
+backend/logs/*.log
+```
+
+Inside the Promtail container, this is mounted as:
+
+```text
+/var/log/medical_rag/*.log
+```
+
+LogQL examples:
 
 ```logql
-{job="week5"}
+{job="medical_rag"}
 ```
 
 ```logql
-{job="week5"} | json
+{job="medical_rag"} | json
 ```
 
 ```logql
-{job="week5"} | json | levelname="ERROR"
+{job="medical_rag"} | json | levelname="ERROR"
 ```
 
 ```logql
-{job="week5"} | json | message =~ ".*cache.*"
+{job="medical_rag"} |= "long-term memory processed"
 ```
+
+Note: `http://127.0.0.1:3100` is the Loki API, not a browser UI. Use Grafana at `http://127.0.0.1:3000` to explore logs.
 
 ## Benchmark
 
-运行单接口 benchmark：
+Run benchmark from the project root:
 
 ```bash
-cd /Users/eric_zcz/Desktop/Eric_Project/agent/Project/week5
+cd /Users/eric_zcz/Desktop/Eric_Project/agent/medical_rag_agent
+```
+
+Single endpoint benchmark:
+
+```bash
 python3 tests/benchmark_api.py \
   --base-url http://127.0.0.1:8000 \
   --endpoint local_query \
@@ -287,7 +393,7 @@ python3 tests/benchmark_api.py \
   --mode serial
 ```
 
-并发 benchmark：
+Concurrent Agent benchmark:
 
 ```bash
 python3 tests/benchmark_api.py \
@@ -297,7 +403,7 @@ python3 tests/benchmark_api.py \
   --mode concurrent
 ```
 
-批量接口 benchmark：
+Batch endpoint benchmark:
 
 ```bash
 python3 tests/benchmark_api.py \
@@ -306,7 +412,7 @@ python3 tests/benchmark_api.py \
   --counts 1 5 10
 ```
 
-混合 workload：
+Mixed workload:
 
 ```bash
 python3 tests/benchmark_api.py \
@@ -316,31 +422,53 @@ python3 tests/benchmark_api.py \
   --mode concurrent
 ```
 
-## 常见排错
+## Troubleshooting
 
-Prometheus 查不到 API 指标：
+API docs do not open:
 
-1. 打开 `http://127.0.0.1:9090/targets`
-2. 确认 `week5-api` 是 `UP`
-3. Docker Compose 内部 target 应该是 `api:80`，不是 `localhost:8000`
-4. 访问几次业务接口后再查 `http_requests_total`
-
-Grafana 里 PromQL 查不到数据：
-
-1. 切到 `Code` 模式输入完整 PromQL
-2. 时间范围改成 `Last 5 minutes` 或 `Last 15 minutes`
-3. 先查 `up`，再查 `http_requests_total`
-4. `rate(...[1m])` 请求太少时可能没有明显变化，可以先用 `rate(...[5m])`
-
-Loki 查不到日志：
-
-1. 确认 `logs/app.log` 存在且有内容
-2. 查看 Promtail 日志：`docker compose logs -f promtail`
-3. Grafana Loki data source 使用 `http://loki:3100`
-4. 先用 `{job="week5"}` 查询，不要一开始就加复杂过滤
-
-容器改了 requirements 后依赖没生效：
+1. Check that `medical_rag_api` is running.
+2. Open `http://127.0.0.1:8000/docs`.
+3. `/agent_query` is a POST endpoint and cannot be opened directly in the browser.
 
 ```bash
-docker compose up --build
+docker ps --format '{{.Names}} {{.Ports}}'
+docker logs medical_rag_api
+```
+
+Prometheus cannot find API metrics:
+
+1. Open `http://127.0.0.1:9090/targets`.
+2. Confirm `medical-rag-api` is `UP`.
+3. The Docker Compose target should be `api:80`, not `localhost:8000`.
+4. Call a few API endpoints before querying `http_requests_total`.
+
+Grafana does not show PromQL results:
+
+1. Use `Code` mode for full PromQL.
+2. Set the time range to `Last 5 minutes` or `Last 15 minutes`.
+3. Query `up` first, then `http_requests_total`.
+4. If traffic is low, prefer `rate(...[5m])` over `rate(...[1m])`.
+
+Loki does not show logs:
+
+1. Confirm `backend/logs/app.log` exists and has recent content.
+2. Check Promtail logs with `docker compose logs -f promtail`.
+3. Use Loki data source URL `http://loki:3100`.
+4. Query `{job="medical_rag"}` before adding filters.
+
+Redis memory keys do not appear:
+
+1. Make sure you are connected to Redis DB 2.
+2. Use port `6383`.
+3. Check keys with:
+
+```bash
+docker exec medical_rag_redis redis-cli -p 6383 -n 2 KEYS "user:*"
+```
+
+Dependencies changed but containers still use old packages:
+
+```bash
+cd /Users/eric_zcz/Desktop/Eric_Project/agent/medical_rag_agent/backend
+docker compose up --build -d
 ```

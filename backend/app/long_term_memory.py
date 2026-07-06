@@ -100,6 +100,7 @@ async def get_long_term_memory(
     
     return memories
 
+
 async def get_long_term_context(
     redis_client,
     user_id: str,
@@ -128,58 +129,6 @@ async def get_long_term_context(
 
     return "\n".join(context)
 
-# async def is_duplicate_memory(
-#     new_memory: ExtractedMemory,
-#     existing_memories: list[dict],
-#     model: str,
-# ) -> bool:
-#     if not existing_memories:
-#         return False
-    
-#     existing_text = "\n".join(
-#         f"{index + 1}. [{memory.get('memory_type', 'fact')}] {memory.get('content', '')}"
-#         for index, memory in enumerate(existing_memories)
-#         if memory.get("content")
-#     )
-
-#     if not existing_text:
-#         return False
-    
-#     prompt = f"""
-#         你是长期记忆去重器。
-
-#         判断“新记忆”是否已经被“已有记忆”表达过。
-#         只要语义基本相同，就认为重复。
-#         不要因为措辞不同就认为不是重复。
-
-#         判断标准：
-#         1. 如果新记忆只是已有记忆的改写、同义表达或更笼统表达，返回 true。
-#         2. 如果新记忆包含已有记忆没有的新偏好、新事实或新项目背景，返回 false。
-#         3. 不要因为 memory_type 不同就直接认为不重复，重点看 content 语义。
-
-#         已有记忆：
-#         {existing_text}
-
-#         新记忆：
-#         [{new_memory.memory_type}] {new_memory.content}
-
-#         请只返回 JSON，不要解释。
-#         如果重复，返回：
-#         {{"is_duplicate": true}}
-
-#         如果不重复，返回：
-#         {{"is_duplicate": false}}
-#         """
-
-#     llm = ChatOpenAI(model=model, temperature=0)
-#     result = await llm.ainvoke(prompt)
-
-#     try:
-#         data = json.loads(result.content)
-#     except json.JSONDecodeError:
-#         return False
-
-#     return bool(data.get("is_duplicate", False))
 
 async def decide_memory_update(
     new_memory: ExtractedMemory,
@@ -353,7 +302,7 @@ async def save_long_term_memory(
 
         stats["saved"] += 1
         existing_contents.add(memory.content)
-        
+
         record["_index"] = len(existing_memories)
         existing_memories.append(record)
     
