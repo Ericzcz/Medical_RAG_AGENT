@@ -22,27 +22,6 @@ async def get_recent_messages(
     return messages
 
 
-async def append_turn(
-    redis_client,
-    session_id: str,
-    user_query: str,
-    assistant_answer: str,
-    ttl: int = 86400,
-) -> None:
-    key = make_messages_key(session_id)
-
-    messages = [
-        {"role": "human", "content": user_query},
-        {"role": "ai", "content": assistant_answer},
-    ]
-
-    await redis_client.rpush(
-        key,
-        *[json.dumps(message, ensure_ascii=False) for message in messages],
-    )
-    await redis_client.expire(key, ttl)
-
-
 def make_summary_key(session_id: str) -> str:
     return f"user:chat:{session_id}:summary"
 
@@ -99,20 +78,20 @@ async def compress_memory_if_needed(
     if overflow <= 0:
         return
 
-    raw_old_messages = await redis_client.lrange(key, 0, overflow - 1)
+    raw_messages = await redis_client.lrange(key, 0, overflow - 1)
 
-    old_messages = []
-    for item in raw_old_messages:
+    messages = []
+    for item in raw_messages:
         try:
-            old_messages.append(json.loads(item))
+            messages.append(json.loads(item))
         except json.JSONDecodeError:
             continue
 
-    if not old_messages:
+    if not messages:
         return
 
     current_summary = await get_summary(redis_client, session_id)
-    new_summary = await summarize_messages(current_summary, old_messages, model)
+    new_summary = await summarize_messages(current_summary, messages, model)
 
     await set_summary(redis_client, session_id, new_summary, ttl=ttl)
     await redis_client.ltrim(key, overflow, -1)
@@ -133,7 +112,28 @@ async def get_memory_context(redis_client, session_id: str) -> list[dict]:
     chat_history.extend(recent_messages)
     return chat_history
 
-async def save_memory_turn(
+# 保存当前这一轮对话
+async def append_turn(
+    redis_client,
+    session_id: str,
+    user_query: str,
+    assistant_answer: str,
+    ttl: int = 86400,
+) -> None:
+    key = make_messages_key(session_id)
+
+    messages = [
+        {"role": "human", "content": user_query},
+        {"role": "ai", "content": assistant_answer},
+    ]
+
+    await redis_client.rpush(
+        key,
+        *[json.dumps(message, ensure_ascii=False) for message in messages],
+    )
+    await redis_client.expire(key, ttl)
+
+async def save_short_memory(
     redis_client,
     session_id: str,
     user_query: str,

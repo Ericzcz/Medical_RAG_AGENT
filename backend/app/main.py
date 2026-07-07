@@ -12,7 +12,7 @@ from app.Redis_Celery.cache import get_cache, set_cache, make_cache_key, delete_
 from app.Redis_Celery.tasks import index_document
 from app.Redis_Celery.celery_app import celery_app
 
-from app.short_term_memory import get_memory_context, save_memory_turn
+from app.short_term_memory import get_memory_context, save_short_memory
 from app.long_term_memory import get_long_term_context, extract_long_term_memory, save_long_term_memory
 
 from prometheus_fastapi_instrumentator import Instrumentator
@@ -99,7 +99,7 @@ async def local_query(req: QueryRequest, request: Request):
             chat_history=chat_history,
         )
 
-        await save_memory_turn(
+        await save_short_memory(
             redis_client,
             req.session_id,
             req.query,
@@ -284,6 +284,7 @@ async def agent_query(req: QueryRequest, request: Request):
             long_term_context = await get_long_term_context(
                 redis_client,
                 req.user_id,
+                req.query,
             )
         
         instructions = None
@@ -291,7 +292,15 @@ async def agent_query(req: QueryRequest, request: Request):
         if long_term_context:
             instructions = f"""
                 以下是关于用户的长期记忆。它们用于理解用户偏好、项目背景和长期上下文。
-                不要把长期记忆当作医学事实来源；医学事实必须优先基于本地知识库、可靠搜索结果或模型已知医学常识。
+
+                记忆来源说明：
+                - 全局长期记忆来自 Redis，会始终注入，通常包含用户偏好和行为纠正。
+                - 相关长期记忆来自 Milvus 语义检索，通常包含和当前问题相关的项目背景或稳定事实。
+
+                使用规则：
+                - 可以用长期记忆理解用户是谁、正在做什么项目、偏好什么回答方式。
+                - 不要把长期记忆当作医学事实来源；医学事实必须优先基于本地知识库、可靠搜索结果或模型已知医学常识。
+                - 当解释本项目架构时，请准确区分：Redis 负责短期记忆和全局长期记忆，Milvus 负责可检索长期记忆的语义召回。
 
                 {long_term_context}
                 """
@@ -314,7 +323,7 @@ async def agent_query(req: QueryRequest, request: Request):
             )
             raise HTTPException(status_code=400, detail=str(e))
 
-        await save_memory_turn(
+        await save_short_memory(
             redis_client,
             req.session_id,
             req.query,
