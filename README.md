@@ -1,36 +1,63 @@
 # Medical RAG Agent
 
-Medical RAG Agent is a FastAPI-based retrieval-augmented generation system with a ReAct-style agent, local medical knowledge retrieval, web search, Redis-backed memory, Celery background tasks, Milvus vector search, and observability through Prometheus, Grafana, Loki, and Promtail.
+Medical RAG Agent is a FastAPI-based medical retrieval-augmented generation system with a ReAct-style agent, local knowledge-base retrieval, web search, Redis-backed memory, Milvus vector search, Celery background indexing, and production-style observability.
 
-The main user-facing endpoint is `/agent_query`. It can combine short-term session memory, long-term user memory, local RAG retrieval, and web search. The `/local_query` endpoint is kept as a direct local RAG interface for debugging, benchmarking, and service-level reuse.
+The main endpoint is `/agent_query`. It can combine:
 
-## Features
+- Short-term session memory from Redis
+- Long-term user memory from Redis and Milvus
+- Local medical RAG retrieval
+- Web search through the agent tool layer
 
-- FastAPI API service with Swagger docs and Prometheus metrics
-- ReAct-style Agent that can call local knowledge search and web search tools
-- Local medical RAG retrieval backed by Milvus
-- Redis cache for stateless query results
-- Redis short-term memory scoped by `session_id`
-- Redis long-term memory scoped by `user_id`
-- LLM-based long-term memory extraction and `skip / merge / create` updates
-- Celery worker for background indexing tasks
-- JSON logging to stdout and `backend/logs/app.log`
-- Prometheus + Grafana metrics dashboards
-- Loki + Promtail log aggregation
+## Highlights
+
+- Built a ReAct-style agent that can route between local medical knowledge retrieval and web search.
+- Implemented hybrid local RAG retrieval with Milvus vector search, BM25 retrieval, and Cohere reranking.
+- Added Redis query cache for context-free local and batch queries.
+- Built short-term memory with Redis sliding window storage and active LLM summarization.
+- Built long-term memory with LLM extraction, `skip / merge / create` update decisions, Redis record storage, and Milvus semantic recall.
+- Split long-term memory into global memory and retrievable memory to balance personalization and relevance.
+- Added Celery background jobs for knowledge-base indexing.
+- Added Prometheus metrics, Grafana dashboards, Loki logs, and Promtail log collection.
+
+## Architecture
+
+```text
+Client
+  |
+  v
+FastAPI
+  |
+  |-- /local_query
+  |     |-- Redis query cache, for context-free queries
+  |     |-- Local RAG retrieval
+  |
+  |-- /agent_query
+        |-- Load short-term memory by session_id
+        |-- Load long-term memory by user_id
+        |     |-- Redis global memory
+        |     |-- Milvus retrievable memory search
+        |-- Run ReAct agent
+        |     |-- Local medical RAG tool
+        |     |-- Web search tool
+        |-- Save short-term memory
+        |-- Extract and update long-term memory
+```
 
 ## Services
 
 | Service | Purpose | Local Address |
 | --- | --- | --- |
-| `api` | FastAPI API service | http://127.0.0.1:8000 |
-| `worker` | Celery background worker | compose internal |
-| `redis` | Cache, Celery broker/backend, memory storage | `127.0.0.1:6383` |
-| `milvus` | Vector database | `127.0.0.1:19530` |
-| `minio` | Milvus object storage | http://127.0.0.1:9001 |
-| `prometheus` | Metrics collection | http://127.0.0.1:9090 |
-| `grafana` | Metrics and log visualization | http://127.0.0.1:3000 |
-| `loki` | Log storage API | http://127.0.0.1:3100 |
-| `promtail` | Log collector | compose internal |
+| `api` | FastAPI API service | `http://127.0.0.1:8000` |
+| `worker` | Celery worker for background indexing | Docker internal |
+| `redis` | Query cache, Celery broker/backend, short-term memory, long-term memory records | `127.0.0.1:6383` |
+| `milvus` | Vector database for local RAG and retrievable long-term memory | `127.0.0.1:19530` |
+| `etcd` | Milvus metadata dependency | Docker internal |
+| `minio` | Milvus object storage | `http://127.0.0.1:9001` |
+| `prometheus` | Metrics collection | `http://127.0.0.1:9090` |
+| `grafana` | Metrics and log dashboards | `http://127.0.0.1:3000` |
+| `loki` | Log storage API | `http://127.0.0.1:3100` |
+| `promtail` | Log collector | Docker internal |
 
 Grafana default login:
 
@@ -38,9 +65,28 @@ Grafana default login:
 admin / admin
 ```
 
-## Quick Start
+## Tech Stack
 
-Create `.env` in the project root with the required OpenAI, Tavily, and LangSmith variables.
+- API: FastAPI, Uvicorn, Pydantic
+- Agent and LLM: LangChain, OpenAI-compatible chat models
+- Retrieval: Milvus, BM25, Cohere Rerank
+- Memory and cache: Redis
+- Background jobs: Celery
+- Observability: Prometheus, Grafana, Loki, Promtail
+- Container runtime: Docker Compose
+
+## Setup
+
+Create `.env` in the project root:
+
+```text
+OPENAI_API_KEY=...
+TAVILY_API_KEY=...
+COHERE_API_KEY=...
+LANGSMITH_API_KEY=...
+LANGSMITH_TRACING=true
+LANGSMITH_PROJECT=medical-rag-agent
+```
 
 Start all services:
 
@@ -49,7 +95,7 @@ cd /Users/eric_zcz/Desktop/Eric_Project/agent/medical_rag_agent/backend
 docker compose up --build -d
 ```
 
-Check containers:
+Check service status:
 
 ```bash
 docker compose ps
@@ -61,7 +107,7 @@ Check API logs:
 docker logs medical_rag_api
 ```
 
-Open Swagger docs:
+Open API docs:
 
 ```text
 http://127.0.0.1:8000/docs
@@ -77,14 +123,15 @@ docker compose down
 
 | Method | Path | Description |
 | --- | --- | --- |
+| `GET` | `/` | Service metadata |
 | `GET` | `/health` | Health check |
-| `POST` | `/local_query` | Direct local medical RAG query |
+| `POST` | `/local_query` | Direct local RAG query |
 | `POST` | `/batch_local_query` | Batch local RAG queries |
-| `POST` | `/agent_query` | Main Agent query endpoint |
-| `POST` | `/batch_agent_query` | Batch Agent queries |
-| `DELETE` | `/cache` | Delete cached response |
-| `POST` | `/index` | Submit Milvus indexing task |
-| `GET` | `/tasks/{task_id}` | Query Celery task status |
+| `POST` | `/agent_query` | Main agent endpoint with memory |
+| `POST` | `/batch_agent_query` | Batch agent queries |
+| `DELETE` | `/cache` | Delete cached answer |
+| `POST` | `/index` | Submit background indexing task |
+| `GET` | `/tasks/{task_id}` | Check Celery task status |
 | `GET` | `/metrics` | Prometheus metrics |
 
 Health check:
@@ -93,13 +140,13 @@ Health check:
 curl http://127.0.0.1:8000/health
 ```
 
-Stateless local RAG query:
+Context-free local RAG query:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/local_query \
   -H "Content-Type: application/json" \
   -d '{
-    "query": "什么是 RAG？"
+    "query": "What is retrieval-augmented generation?"
   }'
 ```
 
@@ -109,78 +156,217 @@ Agent query with short-term and long-term memory:
 curl -X POST http://127.0.0.1:8000/agent_query \
   -H "Content-Type: application/json" \
   -d '{
-    "query": "以后回答我项目相关问题时，请默认用中文，并一步一步教我。",
+    "query": "Remember that my project is medical_rag_agent and I want Chinese step-by-step explanations.",
     "session_id": "demo_session_1",
     "user_id": "demo_user"
   }'
 ```
 
-Submit indexing task:
+Follow-up in the same session:
 
 ```bash
-curl -X POST http://127.0.0.1:8000/index
+curl -X POST http://127.0.0.1:8000/agent_query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "How does its memory system work?",
+    "session_id": "demo_session_1",
+    "user_id": "demo_user"
+  }'
 ```
 
-## Memory Architecture
+Cross-session long-term memory test:
 
-This project implements both short-term and long-term memory.
+```bash
+curl -X POST http://127.0.0.1:8000/agent_query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "What project am I working on and what explanation style do I prefer?",
+    "session_id": "demo_session_2",
+    "user_id": "demo_user"
+  }'
+```
 
-Short-term memory is scoped by `session_id`. It helps the Agent understand follow-up questions, pronouns, and context within the same conversation.
+## Memory System
 
-Long-term memory is scoped by `user_id`. It stores durable user preferences, project facts, stable context, and corrections across sessions.
+The project has two memory layers:
+
+```text
+Short-term memory:
+session_id -> Redis messages + rolling summary
+
+Long-term memory:
+user_id -> Redis complete memory records
+user_id + query -> Milvus semantic recall for retrievable memory
+```
 
 ### Short-Term Memory
 
-Short-term memory is stored in Redis DB 2.
+Short-term memory is implemented in `backend/app/short_term_memory.py`.
 
-Each session stores recent user/assistant turns in a Redis List:
+It is scoped by `session_id` and is designed for current-session continuity, follow-up questions, pronouns, and recent context.
+
+Redis keys:
 
 ```text
 user:chat:{session_id}:messages
-```
-
-When the message count exceeds the configured sliding window, older messages are summarized and moved into:
-
-```text
 user:chat:{session_id}:summary
 ```
 
-At query time, the system builds memory context with:
+The `messages` key is a Redis List containing recent user and assistant messages:
 
-```text
-summary + recent messages
+```json
+{"role": "human", "content": "What is RAG?"}
+{"role": "ai", "content": "RAG means retrieval-augmented generation..."}
 ```
 
-This keeps prompts efficient while preserving the important context from earlier turns.
+The `summary` key is a Redis String containing a compressed summary of older turns.
+
+Flow:
+
+```text
+Request starts
+  |
+  |-- get_memory_context()
+        |-- get_summary()
+        |-- get_recent_messages()
+        |-- summary + recent messages -> chat_history
+
+Request finishes
+  |
+  |-- save_short_memory()
+        |-- append_turn()
+        |-- compress_memory_if_needed()
+              |-- old summary + overflow messages -> new summary
+              |-- ltrim messages to keep the latest window
+```
+
+When the Redis List grows beyond `max_messages`, older messages are summarized by an LLM and removed from the List. The latest messages stay in raw form, while older context is preserved as a rolling summary.
 
 ### Long-Term Memory
 
-Long-term memory is also stored in Redis DB 2 and keyed by user:
+Long-term memory is implemented in `backend/app/long_term_memory.py`.
+
+It is scoped by `user_id` and is designed for durable personalization across sessions.
+
+The extractor only keeps durable information:
+
+- `preference`: user preferences such as language, explanation style, or code style
+- `correction`: user corrections to assistant behavior
+- `project`: project background, goals, architecture, or stack
+- `fact`: stable facts about the user or project
+
+It avoids temporary questions, one-off test data, session IDs, ordinary technical explanations, and sensitive medical personal information unless explicitly requested.
+
+### Redis as Source of Truth
+
+Redis stores the complete long-term memory records.
+
+Global memories:
 
 ```text
-user:{user_id}:long_term_memory
+user:{user_id}:global_memory
 ```
 
-After each `/agent_query` response, the system runs a memory extractor over the current user query and assistant answer. The extractor only keeps durable information such as:
-
-- User preferences
-- Project background
-- Stable facts
-- Corrections to assistant behavior
-
-It avoids one-off questions, temporary test data, session IDs, ordinary technical explanations, and sensitive medical personal information unless the user explicitly asks to save it.
-
-### Long-Term Memory Update Policy
-
-Each candidate memory is passed into an LLM-based update decision step:
+Stores:
 
 ```text
-skip   -> the memory is fully duplicated, so it is ignored
-merge  -> the memory extends an existing memory, so the old Redis List item is updated with lset
-create -> the memory is new, so it is appended with rpush
+preference
+correction
 ```
 
-The save layer tracks:
+Retrievable memories:
+
+```text
+user:{user_id}:retrievable_memory
+```
+
+Stores:
+
+```text
+project
+fact
+```
+
+Example Redis memory record:
+
+```json
+{
+  "memory_id": "550e8400-e29b-41d4-a716-446655440000",
+  "memory_type": "project",
+  "content": "The user is building medical_rag_agent with Redis short-term memory and Milvus long-term semantic recall.",
+  "importance": 5,
+  "user_id": "demo_user",
+  "source_session_id": "demo_session_1",
+  "created_at": "2026-07-06T12:00:00+00:00"
+}
+```
+
+### Milvus as Semantic Index
+
+Milvus stores vector indexes only for retrievable long-term memory:
+
+```text
+project
+fact
+```
+
+Collection:
+
+```text
+long_term_memory_collection
+```
+
+Milvus records use `memory_id` as the primary key. This allows a merged memory to update the same vector record through `upsert`.
+
+At query time:
+
+```text
+current query
+  -> embedding
+  -> Milvus search top_k
+  -> filter by user_id
+  -> return related project/fact memories
+```
+
+Global memories are not searched in Milvus. They are loaded directly from Redis and always injected.
+
+### Long-Term Memory Write Flow
+
+After each `/agent_query` response:
+
+```text
+user query + assistant answer
+  -> extract_long_term_memory()
+  -> list[ExtractedMemory]
+  -> save_long_term_memory()
+```
+
+Each candidate memory goes through:
+
+```text
+exact duplicate check
+  -> LLM update decision
+       |-- skip
+       |-- merge
+       |-- create
+```
+
+Update policy:
+
+```text
+skip:
+  ignore fully duplicated memory
+
+merge:
+  update an existing Redis List item with lset
+  upsert the updated project/fact record into Milvus
+
+create:
+  append a new Redis record with rpush
+  upsert project/fact records into Milvus
+```
+
+Tracked stats:
 
 ```text
 extracted
@@ -190,75 +376,117 @@ skipped_exact_duplicates
 skipped_semantic_duplicates
 ```
 
-This prevents unbounded duplicate growth while allowing useful new details to refine existing memories.
+### Long-Term Memory Read Flow
 
-### Memory Flow
+When `/agent_query` receives `user_id`:
 
 ```text
-User query
-  ↓
-Load short-term memory by session_id
-  ↓
-Load long-term memory by user_id
-  ↓
-Agent answers using memory context, local RAG, and web search
-  ↓
-Save current turn to short-term memory
-  ↓
-Extract long-term memory candidates
-  ↓
-Decide skip / merge / create
-  ↓
-Update Redis long-term memory
+get_long_term_context(redis_client, user_id, query)
+  |
+  |-- Redis: get_global_memories()
+  |     |-- preference/correction
+  |
+  |-- Milvus: get_retrievable_memories_from_milvus()
+        |-- project/fact related to current query
+        |-- user_id filter prevents cross-user recall
 ```
 
-## Memory Testing
+The result is injected into the agent instructions:
 
-Use a fresh `user_id` when testing long-term memory so previous memories do not affect results.
+```text
+Global long-term memory:
+- user preferences and corrections
 
-Create a long-term preference:
+Relevant long-term memory:
+- project/fact memories retrieved from Milvus
+```
+
+## Query Cache
+
+The Redis query cache is implemented in `backend/app/Redis_Celery/cache.py`.
+
+Cache key format:
+
+```text
+cache:{scope}:{sha256(normalized_query)}:{model}
+```
+
+The cache is used for context-free queries:
+
+- `/local_query` without `session_id`
+- `/batch_local_query`
+- `/batch_agent_query`
+
+For `/local_query` with `session_id`, the response depends on chat history, so the local query cache is bypassed.
+
+For `/agent_query` with memory, the response depends on short-term and long-term context, so answer-level caching should be used carefully.
+
+## Knowledge Indexing
+
+Submit a background indexing task:
 
 ```bash
-curl -X POST http://127.0.0.1:8000/agent_query \
-  -H "Content-Type: application/json" \
-  -d '{
-    "query": "以后回答我项目相关问题时，请默认用中文，并一步一步教我。",
-    "session_id": "memory_create_1",
-    "user_id": "memory_demo_user"
-  }'
+curl -X POST http://127.0.0.1:8000/index
 ```
 
-Merge additional detail into that preference:
+Check task status:
 
 ```bash
-curl -X POST http://127.0.0.1:8000/agent_query \
-  -H "Content-Type: application/json" \
-  -d '{
-    "query": "之后讲项目代码的时候，请先讲背景和整体流程，再进入具体函数。",
-    "session_id": "memory_merge_1",
-    "user_id": "memory_demo_user"
-  }'
+curl http://127.0.0.1:8000/tasks/{task_id}
 ```
 
-Verify Redis long-term memory:
+The worker builds the Milvus local RAG collection from documents under:
+
+```text
+data_base/knowledge_db
+```
+
+The compose environment maps this path inside the container:
+
+```text
+KNOWLEDGE_BASE_DIR=/workspace/medical_rag_agent/data_base/knowledge_db
+```
+
+## Redis Inspection
+
+Connect to Redis DB 2:
+
+```bash
+docker exec medical_rag_redis redis-cli -p 6383 -n 2
+```
+
+List memory keys:
+
+```bash
+docker exec medical_rag_redis redis-cli -p 6383 -n 2 KEYS "user:*"
+```
+
+Inspect short-term messages:
 
 ```bash
 docker exec medical_rag_redis redis-cli -p 6383 -n 2 \
-  LRANGE user:memory_demo_user:long_term_memory 0 -1
+  LRANGE user:chat:demo_session_1:messages 0 -1
 ```
 
-Verify short-term messages:
+Inspect short-term summary:
 
 ```bash
 docker exec medical_rag_redis redis-cli -p 6383 -n 2 \
-  LRANGE user:chat:memory_create_1:messages 0 -1
+  GET user:chat:demo_session_1:summary
 ```
 
-Verify short-term summary:
+Inspect global long-term memory:
 
 ```bash
 docker exec medical_rag_redis redis-cli -p 6383 -n 2 \
-  GET user:chat:memory_create_1:summary
+  LRANGE user:demo_user:global_memory 0 -1
+```
+
+Inspect retrievable long-term memory:
+
+```bash
+docker exec medical_rag_redis redis-cli -p 6383 -n 2 \
+  LRANGE user:demo_user:retrievable_memory 0 -1
 ```
 
 ## Observability
@@ -271,12 +499,9 @@ FastAPI exposes metrics at:
 http://127.0.0.1:8000/metrics
 ```
 
-Prometheus targets are configured in `backend/prometheus.yml`:
+Prometheus targets are configured in `backend/prometheus.yml`.
 
-- `medical-rag-api`: `api:80/metrics`
-- `milvus`: `milvus:9091`
-
-Open Prometheus targets:
+Open targets:
 
 ```text
 http://127.0.0.1:9090/targets
@@ -330,12 +555,12 @@ http://loki:3100
 Recommended panels:
 
 - API request rate
-- API status code distribution
 - API p95 latency
+- API status-code distribution
 - Service health with `up`
-- Long-term memory logs filtered by `long-term memory processed`
+- Long-term memory processing logs
 
-### Logs With Loki + Promtail
+### Loki Logs
 
 Application logs are written to:
 
@@ -347,12 +572,6 @@ Promtail reads:
 
 ```text
 backend/logs/*.log
-```
-
-Inside the Promtail container, this is mounted as:
-
-```text
-/var/log/medical_rag/*.log
 ```
 
 LogQL examples:
@@ -373,11 +592,11 @@ LogQL examples:
 {job="medical_rag"} |= "long-term memory processed"
 ```
 
-Note: `http://127.0.0.1:3100` is the Loki API, not a browser UI. Use Grafana at `http://127.0.0.1:3000` to explore logs.
+`http://127.0.0.1:3100` is the Loki API. Use Grafana at `http://127.0.0.1:3000` for log exploration.
 
-## Benchmark
+## Benchmarking
 
-Run benchmark from the project root:
+Run benchmarks from the project root:
 
 ```bash
 cd /Users/eric_zcz/Desktop/Eric_Project/agent/medical_rag_agent
@@ -393,7 +612,7 @@ python3 tests/benchmark_api.py \
   --mode serial
 ```
 
-Concurrent Agent benchmark:
+Concurrent agent benchmark:
 
 ```bash
 python3 tests/benchmark_api.py \
@@ -422,53 +641,89 @@ python3 tests/benchmark_api.py \
   --mode concurrent
 ```
 
+## Project Structure
+
+```text
+medical_rag_agent/
+  backend/
+    app/
+      main.py                    # FastAPI endpoints and request flow
+      agent.py                   # ReAct-style agent tools and orchestration
+      rag_chain.py               # Local RAG retrieval, Milvus, BM25, reranking
+      short_term_memory.py       # Redis sliding-window session memory
+      long_term_memory.py        # Redis/Milvus long-term memory
+      Redis_Celery/
+        cache.py                 # Redis query cache
+        celery_app.py            # Celery app configuration
+        tasks.py                 # Background indexing tasks
+    compose.yaml                 # Docker Compose stack
+    prometheus.yml               # Prometheus targets
+    promtail-config.yml          # Promtail log collection
+  tests/
+    benchmark_api.py             # API benchmark utility
+    test_long_term_memory.py     # Long-term memory test script
+  requirements.txt
+```
+
 ## Troubleshooting
 
 API docs do not open:
 
-1. Check that `medical_rag_api` is running.
+1. Confirm the API container is running.
 2. Open `http://127.0.0.1:8000/docs`.
-3. `/agent_query` is a POST endpoint and cannot be opened directly in the browser.
+3. Remember `/agent_query` is a POST endpoint and cannot be opened directly in a browser.
 
 ```bash
 docker ps --format '{{.Names}} {{.Ports}}'
 docker logs medical_rag_api
 ```
 
+Redis memory keys do not appear:
+
+1. Make sure the request includes `session_id` for short-term memory.
+2. Make sure the request includes `user_id` for long-term memory.
+3. Use Redis DB 2 and port `6383`.
+
+```bash
+docker exec medical_rag_redis redis-cli -p 6383 -n 2 KEYS "user:*"
+```
+
+Long-term memory does not appear in Milvus:
+
+1. Confirm the extracted memory type is `project` or `fact`.
+2. `preference` and `correction` are stored only in Redis global memory.
+3. Confirm `long_term_memory_collection` exists.
+4. Check API logs for memory extraction or Milvus schema errors.
+
+The long-term memory answer seems to come from short-term memory:
+
+1. Test with the same `user_id`.
+2. Use a new `session_id`.
+3. Ask a semantically related but differently phrased question.
+
 Prometheus cannot find API metrics:
 
 1. Open `http://127.0.0.1:9090/targets`.
 2. Confirm `medical-rag-api` is `UP`.
-3. The Docker Compose target should be `api:80`, not `localhost:8000`.
-4. Call a few API endpoints before querying `http_requests_total`.
+3. In Docker Compose, Prometheus should scrape `api:80`, not `localhost:8000`.
 
 Grafana does not show PromQL results:
 
 1. Use `Code` mode for full PromQL.
 2. Set the time range to `Last 5 minutes` or `Last 15 minutes`.
 3. Query `up` first, then `http_requests_total`.
-4. If traffic is low, prefer `rate(...[5m])` over `rate(...[1m])`.
 
 Loki does not show logs:
 
 1. Confirm `backend/logs/app.log` exists and has recent content.
-2. Check Promtail logs with `docker compose logs -f promtail`.
+2. Check Promtail logs.
 3. Use Loki data source URL `http://loki:3100`.
 4. Query `{job="medical_rag"}` before adding filters.
 
-Redis memory keys do not appear:
-
-1. Make sure you are connected to Redis DB 2.
-2. Use port `6383`.
-3. Check keys with:
-
-```bash
-docker exec medical_rag_redis redis-cli -p 6383 -n 2 KEYS "user:*"
-```
-
-Dependencies changed but containers still use old packages:
+Containers still use old dependencies:
 
 ```bash
 cd /Users/eric_zcz/Desktop/Eric_Project/agent/medical_rag_agent/backend
 docker compose up --build -d
 ```
+
