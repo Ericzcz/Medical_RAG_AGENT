@@ -10,6 +10,8 @@ from langchain_community.document_loaders import (
     PyMuPDFLoader,
     UnstructuredMarkdownLoader,
 )
+import xml.etree.ElementTree as ET
+
 from langchain_community.retrievers import BM25Retriever
 from langchain_cohere import CohereRerank
 from langchain_core.documents import Document
@@ -45,6 +47,7 @@ def load_documents() -> List[Document]:
         raise RuntimeError(f"Knowledge base directory not found: {folder_path}")
 
     loaders = []
+    xml_files = []
 
     for root, _, files in os.walk(folder_path):
         for file_name in files:
@@ -54,14 +57,82 @@ def load_documents() -> List[Document]:
                 loaders.append(PyMuPDFLoader(file_path))
             elif suffix == "md":
                 loaders.append(UnstructuredMarkdownLoader(file_path))
+            elif suffix == "xml":
+                xml_files.append(file_path)
+
 
     documents: List[Document] = []
     for loader in loaders:
         documents.extend(loader.load())
 
+    for file_path in xml_files:
+        documents.extend(load_xml_documents(file_path))
+
     if not documents:
         raise RuntimeError(
-            f"No PDF or Markdown documents found in knowledge base: {folder_path}"
+            f"No PDF, Markdown, or XML documents found in knowledge base: {folder_path}"
+        )
+
+    return documents
+
+
+def load_xml_documents(file_path: str) -> List[Document]:
+    try:
+        root = ET.parse(file_path).getroot()
+    except ET.ParseError:
+        return []
+
+    source = root.attrib.get("source", "")
+    url = root.attrib.get("url", "")
+    document_id = root.attrib.get("id", "")
+    focus = root.findtext("Focus", default="").strip()
+
+    documents: List[Document] = []
+
+    for qa_pair in root.findall("./QAPairs/QAPair"):
+        question_node = qa_pair.find("Question")
+        answer_node = qa_pair.find("Answer")
+
+        question = (
+            "".join(question_node.itertext()).strip()
+            if question_node is not None
+            else ""
+        )
+        answer = (
+            "".join(answer_node.itertext()).strip()
+            if answer_node is not None
+            else ""
+        )
+
+        if not question or not answer:
+            continue
+
+        qid = question_node.attrib.get("qid", "") if question_node is not None else ""
+        qtype = question_node.attrib.get("qtype", "") if question_node is not None else ""
+
+        page_content = "\n".join(
+            item
+            for item in [
+                f"Focus: {focus}" if focus else "",
+                f"Question: {question}",
+                f"Answer: {answer}",
+            ]
+            if item
+        )
+
+        documents.append(
+            Document(
+                page_content=page_content,
+                metadata={
+                    "source": file_path,
+                    "dataset_source": source,
+                    "url": url,
+                    "document_id": document_id,
+                    "focus": focus,
+                    "qid": qid,
+                    "qtype": qtype,
+                },
+            )
         )
 
     return documents
@@ -119,7 +190,6 @@ async def embed_one_batch(batch, embedding_model, sem, retries = 3):
             wait_time = 2 ** attempt
             await asyncio.sleep(wait_time)
 
-    
 
 async def embed_all(
         texts, 
@@ -143,8 +213,6 @@ async def embed_all(
 
     return all_vectors
 
-    
-    
 
 def build_milvus_collection(
     batch_size: int = 64,
