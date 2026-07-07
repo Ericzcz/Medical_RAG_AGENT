@@ -3,6 +3,11 @@ from langchain_openai import ChatOpenAI
 from app.schemas import ExtractedMemory
 from datetime import datetime, timezone
 from app.schemas import MemoryUpdateDecision
+from uuid import uuid4
+from pymilvus import DataType
+from app.rag_chain import get_embedding_model, get_milvus_client
+
+LONG_TERM_MEMORY_COLLECTION = "long_term_memory_collection"
 
 MEMORY_EXTRACT_PROMPT = """
     你是一个长期记忆提取器。
@@ -131,19 +136,58 @@ async def get_global_memories(redis_client, user_id: str, limit: int = 20) -> li
         limit=limit,
     )
 
+async def get_retrievable_memories_from_milvus(
+    user_id: str,
+    query: str,
+    top_k: int = 5,
+) -> list[dict]:
+    client = get_milvus_client()
 
-async def get_retrievable_memories(redis_client, user_id: str, limit: int = 20) -> list[dict]:
-    return await get_memories_from_key(
-        redis_client,
-        make_retrievable_memory_key(user_id),
-        limit=limit,
+    if not client.has_collection(collection_name=LONG_TERM_MEMORY_COLLECTION):
+        return []
+
+    embedding_model = get_embedding_model()
+    query_vector = await embedding_model.aembed_query(query)
+
+    results = client.search(
+        collection_name=LONG_TERM_MEMORY_COLLECTION,
+        data=[query_vector],
+        limit=top_k,
+        filter=f'user_id == "{user_id}"',
+        output_fields=[
+            "memory_id",
+            "user_id",
+            "memory_type",
+            "content",
+            "importance",
+        ],
     )
 
+    memories = []
 
+    for item in results[0]:
+        entity = item.get("entity", {})
+        memory = {
+            "memory_id": entity.get("memory_id"),
+            "user_id": entity.get("user_id"),
+            "memory_type": entity.get("memory_type"),
+            "content": entity.get("content"),
+            "importance": entity.get("importance", 1),
+            "score": item.get("distance"),
+        }
+
+        if memory["content"]:
+            memories.append(memory)
+
+    return memories
+
+    
 async def get_long_term_context(
     redis_client,
     user_id: str,
+    query: str,
     limit: int = 20,
+    top_k: int = 5,
 ) -> str:
     global_memories = await get_global_memories(
         redis_client,
@@ -151,10 +195,10 @@ async def get_long_term_context(
         limit=limit,
     )
 
-    retrievable_memories = await get_retrievable_memories(
-        redis_client,
-        user_id,
-        limit=limit,
+    retrievable_memories = await get_retrievable_memories_from_milvus(
+        user_id=user_id,
+        query=query,
+        top_k=top_k,
     )
     
     context = []
@@ -190,9 +234,8 @@ async def decide_memory_update(
         return MemoryUpdateDecision(action="create")
     
     existing_text = "\n".join(
-        f"{index + 1}. [{memory.get('memory_type', 'fact')}] {memory.get('content', '')}"
-        for index, memory in enumerate(existing_memories)
-        if memory.get("content")
+        f"{memory.get('_index')}. [{memory.get('memory_type', 'fact')}] {memory.get('content', '')}"
+        for memory in existing_memories if memory.get("content")
     )
 
     if not existing_text:
@@ -260,6 +303,109 @@ async def decide_memory_update(
     return decision
 
 
+def ensure_long_term_memory_collection() -> None:
+    client = get_milvus_client()
+
+    if client.has_collection(collection_name=LONG_TERM_MEMORY_COLLECTION):
+        return
+
+    embedding_model = get_embedding_model()
+    dimension = len(embedding_model.embed_query("test"))
+
+    schema = client.create_schema(
+        auto_id=False,
+        enable_dynamic_field=False,
+    )
+
+    schema.add_field(
+        field_name="memory_id",
+        datatype=DataType.VARCHAR,
+        is_primary=True,
+        max_length=64,
+    )
+    schema.add_field(
+        field_name="vector",
+        datatype=DataType.FLOAT_VECTOR,
+        dim=dimension,
+    )
+    schema.add_field(
+        field_name="user_id",
+        datatype=DataType.VARCHAR,
+        max_length=128,
+    )
+    schema.add_field(
+        field_name="memory_type",
+        datatype=DataType.VARCHAR,
+        max_length=32,
+    )
+    schema.add_field(
+        field_name="content",
+        datatype=DataType.VARCHAR,
+        max_length=4096,
+    )
+    schema.add_field(
+        field_name="importance",
+        datatype=DataType.INT64,
+    )
+
+    index_params = client.prepare_index_params()
+    index_params.add_index(
+        field_name="vector",
+        index_type="AUTOINDEX",
+        metric_type="COSINE",
+    )
+    index_params.add_index(
+        field_name="user_id",
+        index_type="AUTOINDEX",
+        index_name="user_id_index",
+    )
+
+    client.create_collection(
+        collection_name=LONG_TERM_MEMORY_COLLECTION,
+        schema=schema,
+        index_params=index_params,
+    )
+
+def format_memory_for_embedding(record: dict) -> str:
+    return f"[{record.get('memory_type')}] {record.get('content')}"
+
+
+async def upsert_retrievable_memory_to_milvus(record: dict) -> None:
+    if not is_retrievable_memory(record):
+        return
+
+    if not record.get("memory_id"):
+        return
+
+    if not record.get("user_id"):
+        return
+
+    if not record.get("content"):
+        return
+
+    ensure_long_term_memory_collection()
+
+    embedding_model = get_embedding_model()
+    client = get_milvus_client()
+
+    text = format_memory_for_embedding(record)
+    vector = await embedding_model.aembed_query(text)
+
+    client.upsert(
+        collection_name=LONG_TERM_MEMORY_COLLECTION,
+        data=[
+            {
+                "memory_id": record["memory_id"],
+                "vector": vector,
+                "user_id": record["user_id"],
+                "memory_type": record["memory_type"],
+                "content": record["content"],
+                "importance": record.get("importance", 1),
+            }
+        ],
+    )
+
+
 async def save_long_term_memory(
     redis_client,
     user_id: str,
@@ -279,8 +425,6 @@ async def save_long_term_memory(
         
     if not memories:
         return stats
-    
-    
 
     for memory in memories:
         key = get_memory_storage_key(user_id, memory)
@@ -329,6 +473,7 @@ async def save_long_term_memory(
                     "updated_at": datetime.now(timezone.utc).isoformat(),
                 }
 
+                updated_record.setdefault("memory_id", str(uuid4()))
                 updated_record.pop("_index", None)
 
                 await redis_client.lset(
@@ -337,11 +482,9 @@ async def save_long_term_memory(
                     json.dumps(updated_record, ensure_ascii=False),
                 )
 
+                await upsert_retrievable_memory_to_milvus(updated_record)
+
                 stats["merged"] += 1
-
-                target_memory["content"] = decision.merged_content
-                existing_contents.add(decision.merged_content)
-
                 continue
         
             
@@ -349,16 +492,15 @@ async def save_long_term_memory(
         record["user_id"] = user_id
         record["source_session_id"] = session_id
         record["created_at"] = datetime.now(timezone.utc).isoformat()
+        record["memory_id"] = str(uuid4())
 
         await redis_client.rpush(key, json.dumps(record, ensure_ascii=False))
 
         await redis_client.ltrim(key, -max_memories, -1)
 
-        stats["saved"] += 1
-        existing_contents.add(memory.content)
+        await upsert_retrievable_memory_to_milvus(record)
 
-        record["_index"] = len(existing_memories)
-        existing_memories.append(record)
+        stats["saved"] += 1
     
 
     return stats
