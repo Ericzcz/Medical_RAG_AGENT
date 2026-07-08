@@ -647,7 +647,17 @@ python3 tests/benchmark_api.py \
 medical_rag_agent/
   backend/
     app/
-      main.py                    # FastAPI endpoints and request flow
+      main.py                    # FastAPI app setup, lifespan, router registration
+      api/
+        routes/
+          health.py              # Root and health endpoints
+          query.py               # Local, batch, and agent query endpoints
+          cache.py               # Cache endpoint
+          indexing.py            # Indexing task endpoints
+      schemas/
+        query.py                 # Query request/response DTOs
+        memory.py                # Long-term memory DTOs
+        task.py                  # Task/indexing DTOs
       agent.py                   # ReAct-style agent tools and orchestration
       rag_chain.py               # Local RAG retrieval, Milvus, BM25, reranking
       short_term_memory.py       # Redis sliding-window session memory
