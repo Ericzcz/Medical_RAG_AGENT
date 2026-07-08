@@ -415,9 +415,9 @@ async def create_rag_chain(model: str, collection_name: str = "RAG_collection"):
     )
 
     condense_question_system_template = (
-        "请根据聊天记录和用户最新问题，"
-        "把用户最新问题改写成一个可以独立理解的问题。"
-        "不要回答问题，只需要返回改写后的问题。"
+        "Use the chat history and the user's latest question to rewrite the latest "
+        "question into a standalone question that can be understood without prior context. "
+        "Do not answer the question. Return only the rewritten question."
     )
     condense_question_prompt = ChatPromptTemplate.from_messages(
         [
@@ -436,9 +436,9 @@ async def create_rag_chain(model: str, collection_name: str = "RAG_collection"):
     )
 
     system_prompt = (
-        "你是一个问答任务的助手。"
-        "请使用检索到的上下文片段回答问题。"
-        "如果你不知道答案就说不知道。"
+        "You are an assistant for question-answering tasks. "
+        "Use the retrieved context snippets to answer the question. "
+        "If you do not know the answer, say that you do not know."
         "\n\n"
         "{context}"
     )
@@ -487,14 +487,14 @@ async def answer_one_query(query: str, docs: list[Document], llm) -> str:
     context = combine_docs(docs)
 
     prompt = f"""
-        你是一个问答助手。
-        请根据下面上下文回答问题。
-        如果不知道就说不知道。
+        You are a question-answering assistant.
+        Answer the question using the context below.
+        If you do not know the answer, say that you do not know.
 
-        上下文:
+        Context:
         {context}
 
-        问题:
+        Question:
         {query}
         """
 
@@ -509,11 +509,11 @@ async def search_local_knowledge_batch(
     collection_name: str = "RAG_collection",
     rerank_max_concurrency: int = 3,
 ) -> list[dict[str, str | None]]:
-    # 1. 准备 retriever
+    # 1. Prepare retrievers.
     vector_retriever = create_vector_retriever(collection_name=collection_name)
     bm25_retriever = create_bm25_retriever()
 
-    # 2. 收集每个 query 的 candidate docs
+    # 2. Collect candidate docs for each query.
     results = [None] * len(queries)
     queries_and_docs = []
     rerank_meta = []
@@ -534,7 +534,7 @@ async def search_local_knowledge_batch(
                 "error": str(e),
             }
 
-    # 3. 调用 rerank_all_queries
+    # 3. Call rerank_all_queries.
     reranker = CohereRerank(
         model="rerank-v3.5",
         top_n=8,
@@ -546,7 +546,7 @@ async def search_local_knowledge_batch(
         max_concurrency=rerank_max_concurrency,
         )
 
-    # 4. 用 reranked docs 生成 answers
+    # 4. Generate answers from reranked docs.
 
     llm = ChatOpenAI(model=model, temperature=0)
 

@@ -187,20 +187,23 @@ async def agent_query(req: QueryRequest, request: Request):
 
         if long_term_context:
             instructions = f"""
-                以下是关于用户的长期记忆。它们用于理解用户偏好、项目背景和长期上下文。
+                The following is long-term memory about the user. Use it to understand
+                user preferences, project background, and durable context.
 
-                - 对 memory_type=communication_preference 和 memory_type=behavior_correction 的全局长期记忆必须遵守，除非用户在当前问题中明确提出相反要求。
-                - 如果读取到旧版本 memory_type=preference 或 memory_type=correction，也按全局长期记忆处理。
-                - 如果全局长期记忆中包含回答语言偏好，例如“用中文回答”，即使用户当前问题是英文，也应该使用该偏好语言回答。
+                - You must follow global long-term memories with memory_type=communication_preference
+                  or memory_type=behavior_correction unless the current user question explicitly overrides them.
+                - If you read legacy memory_type=preference or memory_type=correction, treat it as global long-term memory too.
+                - If global long-term memory contains an answer-language preference, such as answering in Chinese,
+                  follow that preferred language even when the current question is written in another language.
 
-                记忆来源说明：
-                - 全局长期记忆来自 Redis，会始终注入，通常包含用户偏好和行为纠正。
-                - 相关长期记忆来自 Milvus 语义检索，通常包含和当前问题相关的项目背景或用户上下文。
+                Memory source notes:
+                - Global long-term memory comes from Redis and is always injected. It usually contains user preferences and behavior corrections.
+                - Relevant long-term memory comes from Milvus semantic retrieval. It usually contains project background or user context related to the current question.
 
-                使用规则：
-                - 可以用长期记忆理解用户是谁、正在做什么项目、偏好什么回答方式。
-                - 不要把长期记忆当作医学事实来源；医学事实必须优先基于本地知识库、可靠搜索结果或模型已知医学常识。
-                - 当解释本项目架构时，请准确区分：Redis 负责短期记忆和全局长期记忆，Milvus 负责可检索长期记忆的语义召回。
+                Usage rules:
+                - Use long-term memory to understand who the user is, what project they are working on, and how they prefer answers.
+                - Do not treat long-term memory as a source of medical facts. Medical facts must come primarily from the local knowledge base, reliable search results, or known medical knowledge.
+                - When explaining this project's architecture, distinguish accurately: Redis stores short-term memory and global long-term memory, while Milvus provides semantic recall for retrievable long-term memory.
 
                 {long_term_context}
                 """

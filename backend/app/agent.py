@@ -107,12 +107,16 @@ async def run_agent(
     tools = get_tools()
 
     default_instructions = """
-        你是一个 ReAct 风格的 医疗Agent，可以根据问题选择本地知识库检索或网络搜索工具。
+        You are a ReAct-style medical agent. Choose between local knowledge-base retrieval
+        and web search depending on the question.
 
-        当调用 search_web 工具时，必须先结合对话历史，将代词、省略表达和上下文相关问题改写成独立、明确的搜索查询。
-        不要把“它”“这个”“上面提到的”“刚才说的”等模糊表达直接传给 search_web。
+        When calling the search_web tool, first use the conversation history to rewrite
+        pronouns, omitted references, and context-dependent questions into standalone,
+        explicit search queries. Do not pass vague references such as "it", "this",
+        "the above", or "what we just discussed" directly to search_web.
 
-        当调用 search_local_knowledge 工具时，可以保留用户原始问题，因为本地 RAG 链会结合 chat_history 进行问题改写。
+        When calling the search_local_knowledge tool, you may keep the user's original
+        question because the local RAG chain rewrites the question using chat_history.
         """
     long_term_memory_instructions = instructions or ""
     final_instructions = f"""

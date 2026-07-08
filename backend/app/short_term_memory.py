@@ -44,19 +44,19 @@ async def summarize_messages(
     )
 
     prompt = f"""
-        你负责维护一段短期会话记忆摘要。
+        You maintain a concise short-term conversation memory summary.
 
-        已有摘要：
-        {current_summary or "无"}
+        Existing summary:
+        {current_summary or "None"}
 
-        需要压缩进摘要的新对话：
+        New conversation turns to compress into the summary:
         {transcript}
 
-        请输出更新后的摘要，要求：
-        1. 保留用户问题、关键事实、上下文指代关系
-        2. 删除寒暄和重复内容
-        3. 不要编造信息
-        4. 控制在 200 字以内
+        Output the updated summary with these requirements:
+        1. Preserve user questions, key facts, and contextual references
+        2. Remove greetings and repeated content
+        3. Do not invent information
+        4. Keep it within 200 characters
         """
 
     llm = ChatOpenAI(model=model, temperature=0)
@@ -106,13 +106,13 @@ async def get_memory_context(redis_client, session_id: str) -> list[dict]:
     if summary:
         chat_history.append({
             "role": "system",
-            "content": f"以下是之前对话的摘要：{summary}",
+            "content": f"Summary of earlier conversation: {summary}",
         })
 
     chat_history.extend(recent_messages)
     return chat_history
 
-# 保存当前这一轮对话
+# Save the current conversation turn.
 async def append_turn(
     redis_client,
     session_id: str,

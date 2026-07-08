@@ -17,33 +17,34 @@ LEGACY_GLOBAL_MEMORY_TYPES = {"preference", "correction"}
 LEGACY_RETRIEVABLE_MEMORY_TYPES = {"project", "fact"}
 
 MEMORY_EXTRACT_PROMPT = """
-    你是一个长期记忆提取器。
+    You are a long-term memory extractor.
 
-    你的任务是判断当前这一轮用户问题和助手回答中，是否包含未来对话仍然有价值的信息。
+    Your task is to decide whether the current user question and assistant answer
+    contain durable information that will remain useful in future conversations.
 
-    只保存以下类型的信息：
-    1. communication_preference: 用户长期交流偏好，例如语言、解释风格、代码风格
-    2. behavior_correction: 用户对助手行为的纠正，例如不要直接改代码、要一步一步教
-    3. project_context: 用户正在做的项目背景、技术栈、目标、架构
-    4. user_context: 非敏感、稳定的用户上下文，例如用户正在准备简历、希望通过引导掌握代码
+    Only save the following types of information:
+    1. communication_preference: long-term communication preferences, such as language, explanation style, or code style
+    2. behavior_correction: corrections to assistant behavior, such as not editing code directly or teaching step by step first
+    3. project_context: stable project background, tech stack, goals, or architecture
+    4. user_context: non-sensitive stable user context, such as resume preparation or a desire to learn through guided explanations
 
-    不要保存：
-    1. 临时问题
-    2. 一次性的测试数据
-    3. session_id、临时命令结果
-    4. 普通技术解释
-    5. 医学知识库事实，例如疾病定义、遗传方式、治疗方式；这些应该来自 RAG 知识库，不属于用户长期记忆
-    6. 敏感医疗个人信息，除非用户明确要求长期保存
+    Do not save:
+    1. Temporary questions
+    2. One-off test data
+    3. session_id values or temporary command outputs
+    4. Ordinary technical explanations
+    5. Medical knowledge-base facts, such as disease definitions, inheritance patterns, or treatments; these should come from the RAG knowledge base, not user memory
+    6. Sensitive personal medical information unless the user explicitly asks to remember it long term
 
-    请只返回 JSON 数组，不要返回 markdown，不要解释。
+    Return only a JSON array. Do not return markdown. Do not explain.
 
-    如果没有值得保存的信息，返回空数组 []。
+    If there is nothing worth saving, return an empty array: [].
 
-    格式：
+    Format:
     [
     {
         "memory_type": "communication_preference",
-        "content": "用户希望用中文解释技术问题。",
+        "content": "The user prefers Chinese explanations for technical questions.",
         "importance": 4
     }
     ]
@@ -58,10 +59,10 @@ async def extract_long_term_memory(
     llm = ChatOpenAI(model=model, temperature=0)
 
     message = f"""
-        用户问题：
+        User question:
         {user_query}
 
-        助手回答：
+        Assistant answer:
         {assistant_answer}
         """
 
@@ -212,7 +213,7 @@ async def get_long_term_context(
     context = []
 
     if global_memories:
-        context.append("全局长期记忆：")
+        context.append("Global long-term memory:")
         for memory in global_memories:
             content = memory.get("content")
             if content:
@@ -222,7 +223,7 @@ async def get_long_term_context(
 
     if retrievable_memories:
         context.append("")
-        context.append("相关长期记忆：")
+        context.append("Relevant long-term memory:")
         for memory in retrievable_memories:
             content = memory.get("content")
             if content:
@@ -250,45 +251,45 @@ async def decide_memory_update(
         return MemoryUpdateDecision(action="create")
     
     prompt = f"""
-        你是长期记忆更新决策器。
+        You are a long-term memory update decision maker.
 
-        你的任务是判断一条新长期记忆应该如何处理。
+        Your task is to decide how a new long-term memory candidate should be handled.
 
-        你只能选择三种动作之一：
+        You can choose only one of three actions:
 
         1. skip
-        含义：新记忆和已有记忆表达的是同一件事，没有任何值得补充的新信息。
+        Meaning: the new memory expresses the same thing as an existing memory and adds no useful new information.
 
         2. merge
-        含义：新记忆和某条已有记忆属于同一主题，并且新记忆补充了有价值的新细节。
-        你需要返回 target_index，并给出合并后的 merged_content。
+        Meaning: the new memory belongs to the same topic as an existing memory and adds useful new details.
+        Return target_index and the merged_content.
 
         3. create
-        含义：新记忆表达的是新的长期交流偏好、行为纠正、项目背景或非敏感用户上下文，应该新增保存。
+        Meaning: the new memory expresses a new long-term communication preference, behavior correction, project context, or non-sensitive user context.
 
-        判断原则：
-        - 不要因为措辞不同就 create。
-        - 不要因为新记忆更具体就 create；如果它是在补充已有记忆，应该 merge。
-        - 如果新记忆包含独立的新主题，才 create。
-        - 如果不确定，优先 create，避免丢失信息。
-        - 不要把疾病定义、遗传方式、治疗方式等医学知识库事实保存为用户长期记忆。
-        - 不要保存敏感医疗个人信息，除非用户明确要求长期保存。
+        Decision rules:
+        - Do not create a new memory only because the wording is different.
+        - Do not create a new memory only because the new memory is more specific; if it extends an existing memory, merge it.
+        - Create only when the new memory contains an independent new topic.
+        - If uncertain, prefer create to avoid losing information.
+        - Do not save medical knowledge-base facts such as disease definitions, inheritance patterns, or treatments as user long-term memory.
+        - Do not save sensitive personal medical information unless the user explicitly asks to remember it long term.
 
-        已有记忆：
+        Existing memories:
         {existing_text}
 
-        新记忆：
+        New memory:
         [{new_memory.memory_type}] {new_memory.content}
 
-        请只返回 JSON，不要解释。
+        Return only JSON. Do not explain.
 
-        如果完全重复：
+        If it is fully duplicated:
         {{"action": "skip"}}
 
-        如果应该合并：
-        {{"action": "merge", "target_index": 0, "merged_content": "合并后的记忆内容"}}
+        If it should be merged:
+        {{"action": "merge", "target_index": 0, "merged_content": "Merged memory content"}}
 
-        如果应该新增：
+        If it should be created:
         {{"action": "create"}}
         """
     
@@ -513,6 +514,5 @@ async def save_long_term_memory(
     
 
     return stats
-
 
 
