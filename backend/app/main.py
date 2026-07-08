@@ -293,12 +293,13 @@ async def agent_query(req: QueryRequest, request: Request):
             instructions = f"""
                 以下是关于用户的长期记忆。它们用于理解用户偏好、项目背景和长期上下文。
 
-                - 对 memory_type=preference 和 memory_type=correction 的全局长期记忆必须遵守，除非用户在当前问题中明确提出相反要求。
+                - 对 memory_type=communication_preference 和 memory_type=behavior_correction 的全局长期记忆必须遵守，除非用户在当前问题中明确提出相反要求。
+                - 如果读取到旧版本 memory_type=preference 或 memory_type=correction，也按全局长期记忆处理。
                 - 如果全局长期记忆中包含回答语言偏好，例如“用中文回答”，即使用户当前问题是英文，也应该使用该偏好语言回答。
 
                 记忆来源说明：
                 - 全局长期记忆来自 Redis，会始终注入，通常包含用户偏好和行为纠正。
-                - 相关长期记忆来自 Milvus 语义检索，通常包含和当前问题相关的项目背景或稳定事实。
+                - 相关长期记忆来自 Milvus 语义检索，通常包含和当前问题相关的项目背景或用户上下文。
 
                 使用规则：
                 - 可以用长期记忆理解用户是谁、正在做什么项目、偏好什么回答方式。

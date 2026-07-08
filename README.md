@@ -250,12 +250,12 @@ It is scoped by `user_id` and is designed for durable personalization across ses
 
 The extractor only keeps durable information:
 
-- `preference`: user preferences such as language, explanation style, or code style
-- `correction`: user corrections to assistant behavior
-- `project`: project background, goals, architecture, or stack
-- `fact`: stable facts about the user or project
+- `communication_preference`: user preferences such as language, explanation style, or code style
+- `behavior_correction`: user corrections to assistant behavior
+- `project_context`: project background, goals, architecture, or stack
+- `user_context`: non-sensitive stable user context, such as learning goals or collaboration preferences
 
-It avoids temporary questions, one-off test data, session IDs, ordinary technical explanations, and sensitive medical personal information unless explicitly requested.
+It avoids temporary questions, one-off test data, session IDs, ordinary technical explanations, medical knowledge-base facts, and sensitive medical personal information unless explicitly requested.
 
 ### Redis as Source of Truth
 
@@ -270,8 +270,8 @@ user:{user_id}:global_memory
 Stores:
 
 ```text
-preference
-correction
+communication_preference
+behavior_correction
 ```
 
 Retrievable memories:
@@ -283,8 +283,8 @@ user:{user_id}:retrievable_memory
 Stores:
 
 ```text
-project
-fact
+project_context
+user_context
 ```
 
 Example Redis memory record:
@@ -292,7 +292,7 @@ Example Redis memory record:
 ```json
 {
   "memory_id": "550e8400-e29b-41d4-a716-446655440000",
-  "memory_type": "project",
+  "memory_type": "project_context",
   "content": "The user is building medical_rag_agent with Redis short-term memory and Milvus long-term semantic recall.",
   "importance": 5,
   "user_id": "demo_user",
@@ -306,8 +306,8 @@ Example Redis memory record:
 Milvus stores vector indexes only for retrievable long-term memory:
 
 ```text
-project
-fact
+project_context
+user_context
 ```
 
 Collection:
@@ -325,7 +325,7 @@ current query
   -> embedding
   -> Milvus search top_k
   -> filter by user_id
-  -> return related project/fact memories
+  -> return related project/user context memories
 ```
 
 Global memories are not searched in Milvus. They are loaded directly from Redis and always injected.
@@ -359,11 +359,11 @@ skip:
 
 merge:
   update an existing Redis List item with lset
-  upsert the updated project/fact record into Milvus
+  upsert the updated project/user context record into Milvus
 
 create:
   append a new Redis record with rpush
-  upsert project/fact records into Milvus
+  upsert project/user context records into Milvus
 ```
 
 Tracked stats:
@@ -384,10 +384,10 @@ When `/agent_query` receives `user_id`:
 get_long_term_context(redis_client, user_id, query)
   |
   |-- Redis: get_global_memories()
-  |     |-- preference/correction
+  |     |-- communication_preference/behavior_correction
   |
   |-- Milvus: get_retrievable_memories_from_milvus()
-        |-- project/fact related to current query
+        |-- project_context/user_context related to current query
         |-- user_id filter prevents cross-user recall
 ```
 
@@ -395,10 +395,10 @@ The result is injected into the agent instructions:
 
 ```text
 Global long-term memory:
-- user preferences and corrections
+- communication preferences and behavior corrections
 
 Relevant long-term memory:
-- project/fact memories retrieved from Milvus
+- project/user context memories retrieved from Milvus
 ```
 
 ## Query Cache
@@ -690,8 +690,8 @@ docker exec medical_rag_redis redis-cli -p 6383 -n 2 KEYS "user:*"
 
 Long-term memory does not appear in Milvus:
 
-1. Confirm the extracted memory type is `project` or `fact`.
-2. `preference` and `correction` are stored only in Redis global memory.
+1. Confirm the extracted memory type is `project_context` or `user_context`.
+2. `communication_preference` and `behavior_correction` are stored only in Redis global memory.
 3. Confirm `long_term_memory_collection` exists.
 4. Check API logs for memory extraction or Milvus schema errors.
 
@@ -726,4 +726,3 @@ Containers still use old dependencies:
 cd /Users/eric_zcz/Desktop/Eric_Project/agent/medical_rag_agent/backend
 docker compose up --build -d
 ```
-

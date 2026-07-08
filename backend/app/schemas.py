@@ -43,7 +43,12 @@ class TaskResponse(BaseModel):
 
 
 class ExtractedMemory(BaseModel):
-    memory_type: Literal["preference", "project", "fact", "correction"]
+    memory_type: Literal[
+        "communication_preference",
+        "behavior_correction",
+        "project_context",
+        "user_context",
+    ]
     content: str
     importance: int = Field(ge=1, le=5)
 

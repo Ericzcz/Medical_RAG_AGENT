@@ -9,23 +9,31 @@ from app.rag_chain import get_embedding_model, get_milvus_client
 
 LONG_TERM_MEMORY_COLLECTION = "long_term_memory_collection"
 
+GLOBAL_MEMORY_TYPES = {"communication_preference", "behavior_correction"}
+RETRIEVABLE_MEMORY_TYPES = {"project_context", "user_context"}
+
+# Keep old records readable so existing Redis and Milvus memory is not orphaned.
+LEGACY_GLOBAL_MEMORY_TYPES = {"preference", "correction"}
+LEGACY_RETRIEVABLE_MEMORY_TYPES = {"project", "fact"}
+
 MEMORY_EXTRACT_PROMPT = """
     你是一个长期记忆提取器。
 
     你的任务是判断当前这一轮用户问题和助手回答中，是否包含未来对话仍然有价值的信息。
 
     只保存以下类型的信息：
-    1. preference: 用户长期偏好，例如语言、解释风格、代码风格
-    2. project: 用户正在做的项目背景、技术栈、目标
-    3. fact: 稳定事实，例如用户使用的工具、项目名称
-    4. correction: 用户对助手行为的纠正，例如不要直接改代码、要一步一步教
+    1. communication_preference: 用户长期交流偏好，例如语言、解释风格、代码风格
+    2. behavior_correction: 用户对助手行为的纠正，例如不要直接改代码、要一步一步教
+    3. project_context: 用户正在做的项目背景、技术栈、目标、架构
+    4. user_context: 非敏感、稳定的用户上下文，例如用户正在准备简历、希望通过引导掌握代码
 
     不要保存：
     1. 临时问题
     2. 一次性的测试数据
     3. session_id、临时命令结果
     4. 普通技术解释
-    5. 敏感医疗个人信息，除非用户明确要求长期保存
+    5. 医学知识库事实，例如疾病定义、遗传方式、治疗方式；这些应该来自 RAG 知识库，不属于用户长期记忆
+    6. 敏感医疗个人信息，除非用户明确要求长期保存
 
     请只返回 JSON 数组，不要返回 markdown，不要解释。
 
@@ -34,7 +42,7 @@ MEMORY_EXTRACT_PROMPT = """
     格式：
     [
     {
-        "memory_type": "preference",
+        "memory_type": "communication_preference",
         "content": "用户希望用中文解释技术问题。",
         "importance": 4
     }
@@ -97,7 +105,7 @@ def is_global_memory(memory: dict | ExtractedMemory) -> bool:
         if isinstance(memory, ExtractedMemory)
         else memory.get("memory_type")
     )
-    return memory_type in {"preference", "correction"}
+    return memory_type in GLOBAL_MEMORY_TYPES | LEGACY_GLOBAL_MEMORY_TYPES
 
 
 def is_retrievable_memory(memory: dict | ExtractedMemory) -> bool:
@@ -106,7 +114,7 @@ def is_retrievable_memory(memory: dict | ExtractedMemory) -> bool:
         if isinstance(memory, ExtractedMemory)
         else memory.get("memory_type")
     )
-    return memory_type in {"project", "fact"}
+    return memory_type in RETRIEVABLE_MEMORY_TYPES | LEGACY_RETRIEVABLE_MEMORY_TYPES
 
 async def get_memories_from_key(
     redis_client,
@@ -234,7 +242,7 @@ async def decide_memory_update(
         return MemoryUpdateDecision(action="create")
     
     existing_text = "\n".join(
-        f"{memory.get('_index')}. [{memory.get('memory_type', 'fact')}] {memory.get('content', '')}"
+        f"{memory.get('_index')}. [{memory.get('memory_type', 'user_context')}] {memory.get('content', '')}"
         for memory in existing_memories if memory.get("content")
     )
 
@@ -256,13 +264,14 @@ async def decide_memory_update(
         你需要返回 target_index，并给出合并后的 merged_content。
 
         3. create
-        含义：新记忆表达的是新的长期偏好、项目背景、稳定事实或纠正信息，应该新增保存。
+        含义：新记忆表达的是新的长期交流偏好、行为纠正、项目背景或非敏感用户上下文，应该新增保存。
 
         判断原则：
         - 不要因为措辞不同就 create。
         - 不要因为新记忆更具体就 create；如果它是在补充已有记忆，应该 merge。
         - 如果新记忆包含独立的新主题，才 create。
         - 如果不确定，优先 create，避免丢失信息。
+        - 不要把疾病定义、遗传方式、治疗方式等医学知识库事实保存为用户长期记忆。
         - 不要保存敏感医疗个人信息，除非用户明确要求长期保存。
 
         已有记忆：
@@ -504,7 +513,6 @@ async def save_long_term_memory(
     
 
     return stats
-
 
 
 
