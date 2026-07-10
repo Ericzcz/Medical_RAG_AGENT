@@ -8,7 +8,7 @@ import time
 import httpx
 
 
-DEFAULT_QUESTIONS = [
+ML_QUESTIONS = [
     "什么是梯度下降？",
     "什么是过拟合？",
     "什么是欠拟合？",
@@ -21,20 +21,38 @@ DEFAULT_QUESTIONS = [
     "为什么需要 rerank？",
 ]
 
+MEDICAL_QUESTIONS = [
+    "What is Aarskog-Scott syndrome?",
+    "How is Aarskog-Scott syndrome inherited?",
+    "What are the symptoms of Noonan syndrome?",
+    "How is Noonan syndrome treated?",
+    "What causes celiac disease?",
+    "What are the symptoms of celiac disease?",
+    "What is Addison disease?",
+    "How is Addison disease diagnosed?",
+    "What is autoimmune hepatitis?",
+    "What are the treatments for autoimmune hepatitis?",
+]
+
+QUESTION_SETS = {
+    "medical": MEDICAL_QUESTIONS,
+    "ml": ML_QUESTIONS,
+}
+
 MIXED_LOCAL_QUESTIONS = [
-    "什么是梯度下降？",
-    "什么是过拟合？",
-    "Transformer 的核心思想是什么？",
-    "什么是 RAG？",
-    "向量检索和 BM25 有什么区别？",
+    "What is Aarskog-Scott syndrome?",
+    "How is Aarskog-Scott syndrome inherited?",
+    "What are the symptoms of Noonan syndrome?",
+    "What causes celiac disease?",
+    "What is Addison disease?",
 ]
 
 MIXED_WEB_QUESTIONS = [
-    "请调用 search_web 工具搜索网络后回答：OpenAI 官方 API 文档首页目前主要介绍什么？",
-    "请调用 search_web 工具搜索网络后回答：Python 官方网站目前推荐的最新稳定版是什么？",
-    "请调用 search_web 工具搜索网络后回答：LangChain 官方文档首页目前有哪些主要模块？",
-    "请调用 search_web 工具搜索网络后回答：Milvus 官方网站目前如何描述 Milvus？",
-    "请调用 search_web 工具搜索网络后回答：FastAPI 官方文档首页目前展示的第一个示例是什么？",
+    "Use the search_web tool to find the current CDC overview page for celiac disease and summarize it.",
+    "Use the search_web tool to find current NIH information about Addison disease and summarize it.",
+    "Use the search_web tool to find current information about autoimmune hepatitis from a reliable medical source.",
+    "Use the search_web tool to find current MedlinePlus information about Noonan syndrome and summarize it.",
+    "Use the search_web tool to find current information about Aarskog-Scott syndrome from a reliable medical source.",
 ]
 
 
@@ -74,6 +92,40 @@ class BenchmarkCase:
     model: str
 
 
+@dataclass
+class WorkloadStats:
+    count: int
+    avg: float
+    p50: float
+    p95: float
+    max_duration: float
+    wall: float
+    throughput: float
+    modes: dict[str, int]
+
+
+def make_user_session(
+    *,
+    base_session_id: str | None,
+    base_user_id: str | None,
+    index: int,
+    multi_user: bool,
+) -> tuple[str | None, str | None]:
+    if not multi_user:
+        return base_session_id, base_user_id
+
+    session_prefix = base_session_id or "bench_session"
+    user_prefix = base_user_id or "bench_user"
+    return (
+        f"{session_prefix}_{index + 1:03d}",
+        f"{user_prefix}_{index + 1:03d}",
+    )
+
+
+def get_questions(question_set: str) -> list[str]:
+    return QUESTION_SETS[question_set]
+
+
 def percentile(values: list[float], pct: float) -> float:
     if not values:
         return 0.0
@@ -86,6 +138,21 @@ def percentile(values: list[float], pct: float) -> float:
     upper = min(lower + 1, len(ordered) - 1)
     weight = rank - lower
     return ordered[lower] * (1 - weight) + ordered[upper] * weight
+
+
+def summarize_results(results: list[RequestResult], wall: float) -> WorkloadStats:
+    durations = [item.duration for item in results]
+    count = len(results)
+    return WorkloadStats(
+        count=count,
+        avg=mean(durations) if durations else 0.0,
+        p50=median(durations) if durations else 0.0,
+        p95=percentile(durations, 0.95),
+        max_duration=max(durations) if durations else 0.0,
+        wall=wall,
+        throughput=(count / wall) if wall > 0 else 0.0,
+        modes=dict(Counter(item.mode for item in results)),
+    )
 
 
 def build_mixed_cases() -> list[BenchmarkCase]:
@@ -138,11 +205,19 @@ async def run_one_query(
     *,
     endpoint: str,
     query: str,
+    session_id: str | None = None,
+    user_id: str | None = None,
 ) -> RequestResult:
+    payload = {"query": query}
+    if session_id:
+        payload["session_id"] = session_id
+    if user_id:
+        payload["user_id"] = user_id
+
     started = time.perf_counter()
     response = await client.post(
         f"/{endpoint}",
-        json={"query": query},
+        json=payload,
     )
     elapsed = time.perf_counter() - started
 
@@ -194,22 +269,72 @@ async def benchmark_round(
     scope: str,
     model: str,
     mode: str,
+    cache_mode: str,
+    session_id: str | None = None,
+    user_id: str | None = None,
+    multi_user: bool = False,
 ) -> tuple[list[RequestResult], float]:
-    for query in queries:
-        await clear_cache(client, question=query, scope=scope, model=model)
+    if cache_mode == "uncached":
+        for query in queries:
+            await clear_cache(client, question=query, scope=scope, model=model)
+    elif cache_mode == "cached":
+        for idx, query in enumerate(queries):
+            item_session_id, item_user_id = make_user_session(
+                base_session_id=session_id,
+                base_user_id=user_id,
+                index=idx,
+                multi_user=multi_user,
+            )
+            await run_one_query(
+                client,
+                endpoint=endpoint,
+                query=query,
+                session_id=item_session_id,
+                user_id=item_user_id,
+            )
 
     started = time.perf_counter()
     if mode == "serial":
         results = []
-        for query in queries:
+        for idx, query in enumerate(queries):
+            item_session_id, item_user_id = make_user_session(
+                base_session_id=session_id,
+                base_user_id=user_id,
+                index=idx,
+                multi_user=multi_user,
+            )
             results.append(
-                await run_one_query(client, endpoint=endpoint, query=query)
+                await run_one_query(
+                    client,
+                    endpoint=endpoint,
+                    query=query,
+                    session_id=item_session_id,
+                    user_id=item_user_id,
+                )
             )
     else:
+        request_specs = [
+            (
+                query,
+                *make_user_session(
+                    base_session_id=session_id,
+                    base_user_id=user_id,
+                    index=idx,
+                    multi_user=multi_user,
+                ),
+            )
+            for idx, query in enumerate(queries)
+        ]
         results = await asyncio.gather(
             *[
-                run_one_query(client, endpoint=endpoint, query=query)
-                for query in queries
+                run_one_query(
+                    client,
+                    endpoint=endpoint,
+                    query=query,
+                    session_id=item_session_id,
+                    user_id=item_user_id,
+                )
+                for query, item_session_id, item_user_id in request_specs
             ]
         )
     wall = time.perf_counter() - started
@@ -223,9 +348,13 @@ async def benchmark_batch_round(
     queries: list[str],
     scope: str,
     model: str,
+    cache_mode: str,
 ) -> BatchRequestResult:
-    for query in queries:
-        await clear_cache(client, question=query, scope=scope, model=model)
+    if cache_mode == "uncached":
+        for query in queries:
+            await clear_cache(client, question=query, scope=scope, model=model)
+    elif cache_mode == "cached":
+        await run_batch_query(client, endpoint=endpoint, queries=queries)
 
     return await run_batch_query(client, endpoint=endpoint, queries=queries)
 
@@ -269,43 +398,109 @@ def print_single(label: str, result: RequestResult) -> None:
 
 
 def print_concurrent(label: str, results: list[RequestResult], wall: float) -> None:
-    durations = [item.duration for item in results]
-    modes = Counter(item.mode for item in results)
+    stats = summarize_results(results, wall)
 
     print(
         f"{label}: "
-        f"avg={mean(durations):.3f}s "
-        f"p50={median(durations):.3f}s "
-        f"p95={percentile(durations, 0.95):.3f}s "
-        f"max={max(durations):.3f}s "
-        f"wall={wall:.3f}s "
-        f"modes={dict(modes)}"
+        f"avg={stats.avg:.3f}s "
+        f"p50={stats.p50:.3f}s "
+        f"p95={stats.p95:.3f}s "
+        f"max={stats.max_duration:.3f}s "
+        f"wall={stats.wall:.3f}s "
+        f"throughput={stats.throughput:.2f} req/s "
+        f"modes={stats.modes}"
     )
 
 
 def print_workload(label: str, results: list[RequestResult], wall: float) -> None:
-    durations = [item.duration for item in results]
-    modes = Counter(item.mode for item in results)
+    stats = summarize_results(results, wall)
 
     print(
         f"{label}: "
-        f"avg={mean(durations):.3f}s "
-        f"p50={median(durations):.3f}s "
-        f"p95={percentile(durations, 0.95):.3f}s "
-        f"max={max(durations):.3f}s "
-        f"wall={wall:.3f}s "
-        f"modes={dict(modes)}"
+        f"avg={stats.avg:.3f}s "
+        f"p50={stats.p50:.3f}s "
+        f"p95={stats.p95:.3f}s "
+        f"max={stats.max_duration:.3f}s "
+        f"wall={stats.wall:.3f}s "
+        f"throughput={stats.throughput:.2f} req/s "
+        f"modes={stats.modes}"
     )
 
 
 def print_batch(label: str, result: BatchRequestResult) -> None:
+    throughput = result.item_count / result.duration if result.duration > 0 else 0.0
     print(
         f"{label}: "
         f"{result.duration:.3f}s "
+        f"throughput={throughput:.2f} req/s "
         f"mode={result.mode} "
         f"items={result.item_count} "
         f"errors={result.error_count} "
         f"item_modes={result.item_modes}"
+    )
+
+
+def print_cache_comparison(
+    count: int,
+    uncached_results: list[RequestResult],
+    uncached_wall: float,
+    cached_results: list[RequestResult],
+    cached_wall: float,
+) -> None:
+    uncached = summarize_results(uncached_results, uncached_wall)
+    cached = summarize_results(cached_results, cached_wall)
+
+    avg_reduction = (
+        ((uncached.avg - cached.avg) / uncached.avg) * 100
+        if uncached.avg > 0
+        else 0.0
+    )
+    p95_reduction = (
+        ((uncached.p95 - cached.p95) / uncached.p95) * 100
+        if uncached.p95 > 0
+        else 0.0
+    )
+
+    print(
+        f"CACHE COMPARISON {count} queries: "
+        f"avg {uncached.avg:.3f}s -> {cached.avg:.3f}s "
+        f"({avg_reduction:.1f}% faster), "
+        f"p95 {uncached.p95:.3f}s -> {cached.p95:.3f}s "
+        f"({p95_reduction:.1f}% faster), "
+        f"throughput {uncached.throughput:.2f} -> {cached.throughput:.2f} req/s"
+    )
+
+
+def print_batch_comparison(
+    count: int,
+    serial_results: list[RequestResult],
+    serial_wall: float,
+    batch_result: BatchRequestResult,
+) -> None:
+    serial = summarize_results(serial_results, serial_wall)
+    batch_throughput = (
+        batch_result.item_count / batch_result.duration
+        if batch_result.duration > 0
+        else 0.0
+    )
+    wall_reduction = (
+        ((serial.wall - batch_result.duration) / serial.wall) * 100
+        if serial.wall > 0
+        else 0.0
+    )
+    throughput_gain = (
+        ((batch_throughput - serial.throughput) / serial.throughput) * 100
+        if serial.throughput > 0
+        else 0.0
+    )
+
+    print(
+        f"BATCH COMPARISON {count} queries: "
+        f"wall {serial.wall:.3f}s -> {batch_result.duration:.3f}s "
+        f"({wall_reduction:.1f}% faster), "
+        f"throughput {serial.throughput:.2f} -> {batch_throughput:.2f} req/s "
+        f"({throughput_gain:.1f}% higher), "
+        f"batch_errors={batch_result.error_count}"
     )
 
 
@@ -333,7 +528,7 @@ def print_mixed(results: list[RequestResult], wall: float, mode: str) -> None:
 
 
 async def main() -> None:
-    parser = argparse.ArgumentParser(description="Benchmark Week4 query endpoints.")
+    parser = argparse.ArgumentParser(description="Benchmark Medical RAG Agent endpoints.")
     parser.add_argument(
         "--base-url",
         default="http://127.0.0.1:8000",
@@ -360,11 +555,52 @@ async def main() -> None:
     )
     parser.add_argument(
         "--workload",
-        choices=["default", "mixed"],
-        default="default",
+        choices=["single", "mixed"],
+        default="single",
         help=(
-            "Use the selected endpoint with default questions, or run a mixed "
+            "Use the selected endpoint with one question set, or run a mixed "
             "local-query/web-agent workload."
+        ),
+    )
+    parser.add_argument(
+        "--question-set",
+        choices=sorted(QUESTION_SETS),
+        default="medical",
+        help="Question set to use for single-endpoint benchmarks.",
+    )
+    parser.add_argument(
+        "--cache-mode",
+        choices=["uncached", "cached", "both"],
+        default="uncached",
+        help=(
+            "uncached clears cache before measuring; cached warms cache before "
+            "measuring; both measures uncached and cached for comparison."
+        ),
+    )
+    parser.add_argument(
+        "--session-id",
+        default=None,
+        help="Optional session_id to include in single-query endpoint payloads.",
+    )
+    parser.add_argument(
+        "--user-id",
+        default=None,
+        help="Optional user_id to include in single-query endpoint payloads.",
+    )
+    parser.add_argument(
+        "--compare-batch",
+        action="store_true",
+        help=(
+            "Compare serial /local_query requests against /batch_local_query. "
+            "Use with --endpoint batch_local_query."
+        ),
+    )
+    parser.add_argument(
+        "--multi-user",
+        action="store_true",
+        help=(
+            "Generate a different session_id/user_id per request to simulate "
+            "memory-aware multi-user concurrency."
         ),
     )
     args = parser.parse_args()
@@ -372,7 +608,7 @@ async def main() -> None:
     available_questions = (
         len(build_mixed_cases())
         if args.workload == "mixed"
-        else len(DEFAULT_QUESTIONS)
+        else len(get_questions(args.question_set))
     )
     if max(args.counts) > available_questions:
         raise ValueError(
@@ -394,32 +630,152 @@ async def main() -> None:
                 print_mixed(results, wall, args.mode)
                 continue
 
-            queries = DEFAULT_QUESTIONS[:count]
-            if config["kind"] == "single":
-                results, wall = await benchmark_round(
+            queries = get_questions(args.question_set)[:count]
+            if args.compare_batch:
+                if args.endpoint != "batch_local_query":
+                    raise ValueError("--compare-batch currently supports batch_local_query only.")
+
+                serial_results, serial_wall = await benchmark_round(
+                    client,
+                    endpoint="local_query",
+                    queries=queries,
+                    scope=config["scope"],
+                    model=config["model"],
+                    mode="serial",
+                    cache_mode=args.cache_mode,
+                )
+                batch_result = await benchmark_batch_round(
                     client,
                     endpoint=args.endpoint,
                     queries=queries,
                     scope=config["scope"],
                     model=config["model"],
-                    mode=args.mode,
+                    cache_mode=args.cache_mode,
                 )
+                print_workload(
+                    f"{count}-query serial local_query {args.cache_mode}",
+                    serial_results,
+                    serial_wall,
+                )
+                print_batch(
+                    f"{count}-query batch_local_query {args.cache_mode}",
+                    batch_result,
+                )
+                print_batch_comparison(
+                    count=count,
+                    serial_results=serial_results,
+                    serial_wall=serial_wall,
+                    batch_result=batch_result,
+                )
+                continue
+
+            if config["kind"] == "single":
+                if args.cache_mode == "both":
+                    uncached_results, uncached_wall = await benchmark_round(
+                        client,
+                        endpoint=args.endpoint,
+                        queries=queries,
+                        scope=config["scope"],
+                        model=config["model"],
+                        mode=args.mode,
+                        cache_mode="uncached",
+                        session_id=args.session_id,
+                        user_id=args.user_id,
+                        multi_user=args.multi_user,
+                    )
+                    cached_results, cached_wall = await benchmark_round(
+                        client,
+                        endpoint=args.endpoint,
+                        queries=queries,
+                        scope=config["scope"],
+                        model=config["model"],
+                        mode=args.mode,
+                        cache_mode="cached",
+                        session_id=args.session_id,
+                        user_id=args.user_id,
+                        multi_user=args.multi_user,
+                    )
+                    label_suffix = " multi-user" if args.multi_user else ""
+                    print_workload(
+                        f"{count}-query {args.mode}{label_suffix} uncached",
+                        uncached_results,
+                        uncached_wall,
+                    )
+                    print_workload(
+                        f"{count}-query {args.mode}{label_suffix} cached",
+                        cached_results,
+                        cached_wall,
+                    )
+                    print_cache_comparison(
+                        count,
+                        uncached_results,
+                        uncached_wall,
+                        cached_results,
+                        cached_wall,
+                    )
+                    continue
+
+                results, wall = await benchmark_round(
+                        client,
+                        endpoint=args.endpoint,
+                        queries=queries,
+                        scope=config["scope"],
+                        model=config["model"],
+                        mode=args.mode,
+                        cache_mode=args.cache_mode,
+                        session_id=args.session_id,
+                        user_id=args.user_id,
+                        multi_user=args.multi_user,
+                    )
 
                 if count == 1:
-                    print_single("SINGLE uncached", results[0])
+                    label_suffix = " multi-user" if args.multi_user else ""
+                    print_single(f"SINGLE{label_suffix} {args.cache_mode}", results[0])
                 elif args.mode == "serial":
-                    print_workload(f"{count}-query serial uncached", results, wall)
+                    label_suffix = " multi-user" if args.multi_user else ""
+                    print_workload(
+                        f"{count}-query serial{label_suffix} {args.cache_mode}",
+                        results,
+                        wall,
+                    )
                 else:
-                    print_concurrent(f"{count} concurrent uncached", results, wall)
+                    label_suffix = " multi-user" if args.multi_user else ""
+                    print_concurrent(
+                        f"{count} concurrent{label_suffix} {args.cache_mode}",
+                        results,
+                        wall,
+                    )
             else:
+                if args.cache_mode == "both":
+                    uncached_result = await benchmark_batch_round(
+                        client,
+                        endpoint=args.endpoint,
+                        queries=queries,
+                        scope=config["scope"],
+                        model=config["model"],
+                        cache_mode="uncached",
+                    )
+                    cached_result = await benchmark_batch_round(
+                        client,
+                        endpoint=args.endpoint,
+                        queries=queries,
+                        scope=config["scope"],
+                        model=config["model"],
+                        cache_mode="cached",
+                    )
+                    print_batch(f"{count}-query batch uncached", uncached_result)
+                    print_batch(f"{count}-query batch cached", cached_result)
+                    continue
+
                 result = await benchmark_batch_round(
                     client,
                     endpoint=args.endpoint,
                     queries=queries,
                     scope=config["scope"],
                     model=config["model"],
+                    cache_mode=args.cache_mode,
                 )
-                print_batch(f"{count}-query batch uncached", result)
+                print_batch(f"{count}-query batch {args.cache_mode}", result)
 
 
 if __name__ == "__main__":
