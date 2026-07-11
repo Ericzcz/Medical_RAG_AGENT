@@ -1,11 +1,13 @@
 from app.skills.local_rag_skill import LocalRagSkill
 from app.skills.web_search_skill import WebSearchSkill
+from app.skills.medical_record_insert_skill import MedicalRecordInsertSkill
 
 
 def get_default_skills():
     return [
         LocalRagSkill(),
         WebSearchSkill(),
+        MedicalRecordInsertSkill(),
     ]
 
 

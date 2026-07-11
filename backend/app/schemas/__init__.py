@@ -8,6 +8,8 @@ from app.schemas.query import (
 )
 from app.schemas.task import AskRequest, AskResponse, IndexRequest, TaskResponse
 
+from app.schemas.medical_record import MedicalRecordCreate, MedicalRecordStored
+
 __all__ = [
     "AskRequest",
     "AskResponse",
@@ -20,4 +22,6 @@ __all__ = [
     "QueryRequest",
     "QueryResponse",
     "TaskResponse",
+    "MedicalRecordCreate",
+    "MedicalRecordStored",
 ]

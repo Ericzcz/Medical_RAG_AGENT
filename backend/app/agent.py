@@ -24,6 +24,10 @@ async def run_agent(
     tool_response_model: str | None = None,
     instructions: str | None = None,
     chat_history: list[dict] | None = None,
+    redis_client=None,
+    user_id: str | None = None,
+    session_id: str | None = None,
+    max_tool_rounds: int = 4,
 ) -> str:
     client = wrap_openai(AsyncOpenAI())
 
@@ -34,6 +38,9 @@ async def run_agent(
     skill_context = SkillContext(
         model=model,
         chat_history=chat_history,
+        redis_client=redis_client,
+        user_id=user_id,
+        session_id=session_id,
     )
 
     default_instructions = """
@@ -47,6 +54,10 @@ async def run_agent(
 
         When calling the search_local_knowledge tool, you may keep the user's original
         question because the local RAG chain rewrites the question using chat_history.
+
+        When calling insert_medical_record, call it at most once for the current user
+        request. After the tool returns success, respond to the user with a concise
+        confirmation instead of calling the same tool again.
         """
     long_term_memory_instructions = instructions or ""
     final_instructions = f"""
@@ -67,7 +78,7 @@ async def run_agent(
         instructions=final_instructions,
     )
 
-    while True:
+    for _ in range(max_tool_rounds):
         input_items += response.output
         function_calls = [item for item in response.output if item.type == "function_call"]
         if not function_calls:
@@ -97,6 +108,8 @@ async def run_agent(
             input=input_items,
             instructions=final_instructions,
         )
+
+    raise RuntimeError("Agent exceeded the maximum number of tool-calling rounds.")
 
 
 async def run_one_agent(query: str, model: str, sem: asyncio.Semaphore) -> dict[str, str | None]:

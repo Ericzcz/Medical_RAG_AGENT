@@ -215,8 +215,11 @@ async def agent_query(req: QueryRequest, request: Request):
             answer = await run_agent(
                 req.query,
                 model=AGENT_MODEL,
-                chat_history=chat_history,
                 instructions = instructions,
+                chat_history=chat_history,
+                redis_client=redis_client,
+                user_id=req.user_id,
+                session_id=req.session_id,
             )
         except RuntimeError as e:
             logger.exception(
@@ -299,7 +302,15 @@ async def agent_query(req: QueryRequest, request: Request):
     )
 
     try:
-        answer = await run_agent(req.query, model=AGENT_MODEL)
+        answer = await run_agent(
+            req.query,
+            model=AGENT_MODEL,
+            instructions = instructions,
+            chat_history=chat_history,
+            redis_client=redis_client,
+            user_id=req.user_id,
+            session_id=req.session_id,
+            )
     except RuntimeError as e:
         logger.exception(
             "agent query failed",
@@ -310,8 +321,6 @@ async def agent_query(req: QueryRequest, request: Request):
             },
         )
         raise HTTPException(status_code=400, detail=str(e))
-
-    #answer = await run_agent(req.query, model=AGENT_MODEL)
 
     data = {
         'answer': answer

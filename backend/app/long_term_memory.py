@@ -34,9 +34,8 @@ MEMORY_EXTRACT_PROMPT = """
     3. session_id values or temporary command outputs
     4. Ordinary technical explanations
     5. Medical knowledge-base facts, such as disease definitions, inheritance patterns, or treatments; these should come from the RAG knowledge base, not user memory
-    6. Sensitive personal medical information unless the user explicitly asks to remember it long term
-
-    Return only a JSON array. Do not return markdown. Do not explain.
+    6. Personal medical record facts, including allergies, symptoms, medications, diagnoses, procedures, vitals, lab results, visit history, family history, or past medical history. These belong to the medical record system, not long-term memory. Return only a JSON array. Do not return markdown. Do not explain.
+    7. If the user asks to record, save, store, or remember medical record facts, do not extract them as long-term memory. They should be handled by the medical record skill instead.
 
     If there is nothing worth saving, return an empty array: [].
 
@@ -273,8 +272,8 @@ async def decide_memory_update(
         - Create only when the new memory contains an independent new topic.
         - If uncertain, prefer create to avoid losing information.
         - Do not save medical knowledge-base facts such as disease definitions, inheritance patterns, or treatments as user long-term memory.
-        - Do not save sensitive personal medical information unless the user explicitly asks to remember it long term.
-
+        - Do not save personal medical record facts such as allergies, symptoms, medications, diagnoses, procedures, vitals, lab results, or visit history as long-term memory. These belong to the medical record system.
+        
         Existing memories:
         {existing_text}
 

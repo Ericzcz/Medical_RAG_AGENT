@@ -9,6 +9,7 @@ class SkillContext:
     chat_history: list[dict] | None = None
     session_id: str | None = None
     user_id: str | None = None
+    redis_client: Any | None = None
 
 
 @dataclass
