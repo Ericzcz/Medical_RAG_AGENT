@@ -1,92 +1,14 @@
 import json
 import asyncio
-from typing import Awaitable, Callable, Dict
 
 from langsmith import traceable
 from langsmith.wrappers import wrap_openai
 
 from openai import AsyncOpenAI
-from tavily import TavilyClient
 
-from .rag_chain import search_local_knowledge
+from app.skills.base import SkillContext
+from app.skills.registry import get_default_skills, get_skill_map, get_tool_schemas
 
-
-def search_web(query: str) -> str:
-    tavily_client = TavilyClient()
-    response = tavily_client.search(
-        query=query,
-        topic="general",
-        search_depth="advanced",
-        max_results=5,
-        include_answer=False,
-        include_raw_content=False,
-    )
-
-    results = response.get("results", [])
-    if not results:
-        return "No relevant web results found."
-
-    blocks = []
-    for idx, item in enumerate(results, 1):
-        blocks.append(
-            "\n".join(
-                [
-                    f"[{idx}]",
-                    f"title: {item.get('title', '')}",
-                    f"url: {item.get('url', '')}",
-                    f"content: {item.get('content', '')}",
-                    f"score: {item.get('score', '')}",
-                ]
-            )
-        )
-
-    return "\n\n".join(blocks)
-
-
-
-def get_tools():
-    return [
-        {
-            "type": "function",
-            "name": "search_local_knowledge",
-            "description": (
-                "Search the local machine learning knowledge base and return "
-                "relevant evidence snippets."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": (
-                            "A machine learning question to search in the local "
-                            "knowledge base."
-                        ),
-                    }
-                },
-                "required": ["query"],
-                "additionalProperties": False,
-            },
-            "strict": True,
-        },
-        {
-            "type": "function",
-            "name": "search_web",
-            "description": "Search the web for recent or external information.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "A query to search on the web.",
-                    }
-                },
-                "required": ["query"],
-                "additionalProperties": False,
-            },
-            "strict": True,
-        },
-    ]
 
 @traceable(
         name="Week4 Agent",
@@ -104,7 +26,15 @@ async def run_agent(
     chat_history: list[dict] | None = None,
 ) -> str:
     client = wrap_openai(AsyncOpenAI())
-    tools = get_tools()
+
+    skills = get_default_skills()
+    tools = get_tool_schemas(skills)
+    skill_map = get_skill_map(skills)
+
+    skill_context = SkillContext(
+        model=model,
+        chat_history=chat_history,
+    )
 
     default_instructions = """
         You are a ReAct-style medical agent. Choose between local knowledge-base retrieval
@@ -125,23 +55,6 @@ async def run_agent(
         {long_term_memory_instructions}
         """
 
-    @traceable(run_type="tool", name="Local Knowledge Search")
-    async def local_tool(query: str) -> str:
-        return await search_local_knowledge(
-            query, 
-            model,
-            chat_history=chat_history,
-            )
-    
-    @traceable(run_type="tool", name="Web Search")
-    async def search_web_async(query: str) -> str:
-        return await asyncio.to_thread(search_web, query)
-    
-    tool_handlers: Dict[str, Callable[[str], Awaitable[str]]] = {
-        "search_local_knowledge": local_tool,
-        "search_web": search_web_async,
-    }
-
     input_items = [
         *format_chat_history_for_responses(chat_history),
         {"role": "user", "content": user_query}
@@ -161,8 +74,15 @@ async def run_agent(
             return response.output_text
 
         for item in function_calls:
-            query = json.loads(item.arguments)["query"]
-            output = await tool_handlers[item.name](query)
+            arguments = json.loads(item.arguments)
+
+            skill = skill_map.get(item.name)
+            if skill is None:
+                raise RuntimeError(f"Unknown skill: {item.name}")
+
+            result = await skill.execute(arguments, skill_context)
+            output = result.content
+
             input_items.append(
                 {
                     "type": "function_call_output",

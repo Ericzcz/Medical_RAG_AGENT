@@ -9,7 +9,10 @@ from app.long_term_memory import (
     get_long_term_context,
     save_long_term_memory,
 )
-from app.rag_chain import search_local_knowledge, search_local_knowledge_batch
+from app.services.local_rag_service import (
+    search_local_knowledge,
+    search_local_knowledge_batch,
+)
 from app.schemas import (
     BatchQueryItem,
     BatchQueryRequest,
