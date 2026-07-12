@@ -31,3 +31,21 @@ async def save_medical_record(
     )
 
     return stored_record
+
+async def get_medical_records(
+    redis_client,
+    user_id: str,
+    limit: int = 20,
+) -> list[dict]:
+    key = make_medical_records_key(user_id)
+
+    raw_records = await redis_client.lrange(key, -limit, -1)
+
+    records = []
+    for raw_record in raw_records:
+        try:
+            records.append(json.loads(raw_record))
+        except json.JSONDecodeError:
+            continue
+
+    return records
