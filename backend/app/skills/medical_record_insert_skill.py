@@ -95,16 +95,12 @@ class MedicalRecordInsertSkill(BaseSkill):
     }
 
     async def execute(self, arguments: dict, context: SkillContext) -> SkillResult:
-        if context.redis_client is None:
-            return SkillResult(content="Unable to save medical record because Redis is not available.")
-
         if not context.user_id:
             return SkillResult(content="Unable to save medical record because user_id is missing.")
 
         record = MedicalRecordCreate(**arguments)
 
         stored_record = await save_medical_record(
-            redis_client=context.redis_client,
             user_id=context.user_id,
             session_id=context.session_id,
             record=record,

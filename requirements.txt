@@ -32,3 +32,5 @@ langsmith
 
 prometheus-client
 prometheus-fastapi-instrumentator
+
+asyncpg

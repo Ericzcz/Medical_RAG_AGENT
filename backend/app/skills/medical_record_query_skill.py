@@ -20,22 +20,35 @@ class MedicalRecordQuerySkill(BaseSkill):
                 "type": "integer",
                 "description": "Maximum number of recent medical records to retrieve.",
             },
+            "field": {
+                "type": "string",
+                "enum": [
+                    "allergies",
+                    "symptoms",
+                    "medications",
+                    "diagnoses",
+                    "procedures",
+                    "vitals",
+                    "notes",
+                    "all",
+                ],
+                "description": "The medical record field to query.",
+            }
         },
-        "required": ["query", "limit"],
+        "required": ["query", "limit", "field"],
         "additionalProperties": False,
     }
 
     async def execute(self, arguments: dict, context: SkillContext) -> SkillResult:
-        if context.redis_client is None:
-            return SkillResult(content="Unable to get medical record because Redis is not available.")
-
         if not context.user_id:
             return SkillResult(content="Unable to get medical record because user_id is missing.")
         
         limit = arguments.get("limit", 20)
+        field = arguments["field"]
+
         records = await get_medical_records(
-            redis_client=context.redis_client,
             user_id=context.user_id,
+            field=field,
             limit=limit,
             )
         

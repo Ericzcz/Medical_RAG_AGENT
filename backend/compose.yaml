@@ -29,6 +29,12 @@ services:
       CELERY_BROKER_URL: redis://redis:6383/0
       CELERY_RESULT_BACKEND: redis://redis:6383/1
       MILVUS_URI: http://milvus:19530
+      DATABASE_URL: postgresql+asyncpg://medical_rag:medical_rag_password@postgres:5432/medical_rag
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: medical_rag
+      POSTGRES_USER: medical_rag
+      POSTGRES_PASSWORD: medical_rag_password
       KNOWLEDGE_BASE_DIR: /workspace/medical_rag_agent/data_base/knowledge_db
       PYTHONDONTWRITEBYTECODE: "1"
     volumes:
@@ -38,6 +44,8 @@ services:
         condition: service_healthy
       milvus:
         condition: service_started
+      postgres:
+        condition: service_healthy
 
   worker:
     build:
@@ -53,6 +61,12 @@ services:
       CELERY_BROKER_URL: redis://redis:6383/0
       CELERY_RESULT_BACKEND: redis://redis:6383/1
       MILVUS_URI: http://milvus:19530
+      DATABASE_URL: postgresql+asyncpg://medical_rag:medical_rag_password@postgres:5432/medical_rag
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: medical_rag
+      POSTGRES_USER: medical_rag
+      POSTGRES_PASSWORD: medical_rag_password
       KNOWLEDGE_BASE_DIR: /workspace/medical_rag_agent/data_base/knowledge_db
       PYTHONDONTWRITEBYTECODE: "1"
     volumes:
@@ -62,6 +76,8 @@ services:
         condition: service_healthy
       milvus:
         condition: service_started
+      postgres:
+        condition: service_healthy
 
   redis:
     image: redis:7
@@ -73,6 +89,24 @@ services:
       - redis-data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "-p", "6383", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  postgres:
+    image: postgres:16
+    container_name: medical_rag_postgres
+    environment:
+      POSTGRES_DB: medical_rag
+      POSTGRES_USER: medical_rag
+      POSTGRES_PASSWORD: medical_rag_password
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./app/db/schema.sql:/docker-entrypoint-initdb.d/001_schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U medical_rag -d medical_rag"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -169,3 +203,4 @@ volumes:
   minio-data:
   milvus-data:
   grafana-data:
+  postgres-data:
