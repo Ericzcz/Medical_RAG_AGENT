@@ -22,6 +22,7 @@ from app.schemas import (
 )
 from app.short_term_memory import get_memory_context, save_short_memory
 
+from app.services.intent_router import classify_intent, get_confidence_policy
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -174,6 +175,33 @@ async def batch_local_query(req: BatchQueryRequest, request: Request):
 @router.post("/agent_query", response_model=QueryResponse)
 async def agent_query(req: QueryRequest, request: Request):
     redis_client = request.app.state.redis
+    chat_history = None
+    instructions = None
+
+    intent_decision = await classify_intent(req.query, AGENT_MODEL)
+    confidence_policy = get_confidence_policy(intent_decision.confidence)
+
+    intent_instruction = f"""
+        Intent routing result:
+        - intent: {intent_decision.intent}
+        - confidence: {intent_decision.confidence}
+        - policy: {confidence_policy}
+        - reason: {intent_decision.reason}
+
+        Confidence-driven routing policy:
+        - strong: strongly prefer the skill that matches the intent unless the user request clearly contradicts it.
+        - weak: treat the intent as a hint, but use normal ReAct reasoning before choosing tools.
+        - uncertain: do not rely on the predicted intent; ask a clarifying question if the request is ambiguous, otherwise use normal ReAct reasoning.
+
+        Intent-to-skill mapping:
+        - local_medical_qa -> search_local_knowledge
+        - web_search -> search_web
+        - medical_record_insert -> insert_medical_record
+        - medical_record_query -> query_medical_records
+        - general_chat -> no tool required unless useful
+        """
+    
+    instructions = intent_instruction
 
     if req.session_id:
         chat_history = await get_memory_context(redis_client, req.session_id)
@@ -186,10 +214,8 @@ async def agent_query(req: QueryRequest, request: Request):
                 req.query,
             )
 
-        instructions = None
-
         if long_term_context:
-            instructions = f"""
+            long_term_memory_instruction = f"""
                 The following is long-term memory about the user. Use it to understand
                 user preferences, project background, and durable context.
 
@@ -210,6 +236,13 @@ async def agent_query(req: QueryRequest, request: Request):
 
                 {long_term_context}
                 """
+
+        
+        instruction_parts = [intent_instruction]
+        if long_term_context:
+            instruction_parts.append(long_term_memory_instruction)
+
+        instructions = "\n\n".join(instruction_parts)
 
         try:
             answer = await run_agent(
@@ -301,6 +334,7 @@ async def agent_query(req: QueryRequest, request: Request):
         },
     )
 
+    
     try:
         answer = await run_agent(
             req.query,

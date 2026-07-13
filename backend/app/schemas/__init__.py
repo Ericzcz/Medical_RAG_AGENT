@@ -7,8 +7,8 @@ from app.schemas.query import (
     QueryResponse,
 )
 from app.schemas.task import AskRequest, AskResponse, IndexRequest, TaskResponse
-
 from app.schemas.medical_record import MedicalRecordCreate, MedicalRecordStored
+from app.schemas.intent import IntentDecision
 
 __all__ = [
     "AskRequest",
@@ -24,4 +24,5 @@ __all__ = [
     "TaskResponse",
     "MedicalRecordCreate",
     "MedicalRecordStored",
+    "IntentDecision"
 ]
