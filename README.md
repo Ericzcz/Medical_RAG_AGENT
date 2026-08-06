@@ -1,558 +1,506 @@
 # Medical RAG Agent
 
-Medical RAG Agent is a FastAPI-based medical AI assistant that combines local medical RAG, ReAct-style tool use, short-term and long-term memory, PostgreSQL-backed medical record workflows, and Docker-based observability.
+Medical RAG Agent is a full-stack medical AI assistant with an English chat interface, intent-aware tool routing, local retrieval-augmented generation (RAG), web search, conversation memory, structured medical records, background indexing, and observability.
 
-The main endpoint is `/agent_query`. It can:
+The browser application sends every question to the main `/agent_query` endpoint. The backend then decides whether to use the local medical knowledge base, search the web, save a medical record, retrieve a medical record, or answer without a tool.
 
-- Answer medical questions from a local knowledge base
-- Search the web for recent or time-sensitive information
-- Store and retrieve user-specific medical records
-- Maintain short-term conversation context by `session_id`
-- Maintain long-term user memory by `user_id`
-- Route requests through an intent router and confidence-driven policy
+> This project provides general health information and is not a substitute for professional diagnosis or treatment. It is a development project, not a production clinical system.
 
-## Quantified Results
+## At a Glance
 
-Benchmarks were run locally on the current Docker Compose setup.
+| Layer | Implementation | Default address |
+| --- | --- | --- |
+| Web application | React 19, TypeScript, vinext, Vite | `http://localhost:3001` |
+| API | FastAPI, Uvicorn | `http://localhost:8000` |
+| API documentation | OpenAPI / Swagger UI | `http://localhost:8000/docs` |
+| Short-term memory and cache | Redis | `localhost:6383` |
+| Vector retrieval and semantic memory | Milvus | `localhost:19530` |
+| Medical records | PostgreSQL | `localhost:5433` |
+| Background indexing | Celery | Internal worker |
+| Metrics | Prometheus | `http://localhost:9090` |
+| Dashboards | Grafana | `http://localhost:3000` |
+| Logs | Loki and Promtail | `http://localhost:3100` |
 
-| Area | Result |
-| --- | --- |
-| Knowledge base scale | Indexed `11,274` XML files into `16,407` QA documents and `72,877` chunks |
-| Short-term memory compression | Reduced prompt memory tokens by `61.9%`, from `737` to `281`, using a 10-message sliding window plus rolling summary |
-| Retrieval quality | Improved Recall@5 by `+9.4pp` and Precision@5 by `+2.0pp` with contextual rewriting + hybrid retrieval + reranking over vector-only retrieval |
-| Retrieval hit rate | Improved Hit@5 from `84.0%` to `100.0%` in the contextual retrieval benchmark |
-| Query cache | Reduced repeated context-free local query latency from `45.875s` to `0.008s` in a 10-query benchmark |
-| Agent concurrency | Handled 10 concurrent memory-aware agent requests with `~4.5x` throughput over single-request execution in local testing |
-| Skill layer | Orchestrated `4` specialized skills: local RAG, web search, medical record insertion, and medical record querying |
-| Medical records | Designed `2` PostgreSQL tables with `3` custom indexes for user and field-level medical record retrieval |
+## What Changed From the Backend-Only Version
 
-## Core Features
+| Area | Previous version | Current version |
+| --- | --- | --- |
+| User experience | API, Swagger UI, and command-line requests | Browser chat application |
+| Main entry point | Call `/local_query` or `/agent_query` manually | UI always calls `/agent_query`; the agent chooses the appropriate skill |
+| Conversations | Caller manually supplied a `session_id` | Users can create, reopen, switch, and delete recent conversations |
+| User identity | Caller manually supplied a `user_id` | Anonymous device-local ID generated on first visit and reused in that browser |
+| Startup | Backend services only | Backend services and frontend are started separately |
+| Cross-origin access | Not required | Explicit FastAPI CORS configuration for the local frontend and configured production origins |
+| Ports | Backend stack used port `3000` for Grafana | Frontend uses `3001`; Grafana remains on `3000` |
 
-- ReAct-style agent loop with explicit Skill abstraction
-- Intent router with confidence policy: `strong`, `weak`, and `uncertain`
-- Local medical RAG with Milvus vector search, BM25 retrieval, hybrid search, and reranking
-- Redis query cache for context-free local and batch queries
-- Redis short-term memory with sliding window and active summarization
-- Redis + Milvus long-term memory with `skip / merge / create` update decisions
-- PostgreSQL medical record insertion and field-level querying
-- Celery background indexing for knowledge-base ingestion
-- Prometheus, Grafana, Loki, and Promtail for metrics and logs
+The backend endpoints remain available for scripts, benchmarks, and direct API use. In particular, `/local_query` and both batch endpoints were not removed; they are simply not exposed as modes in the main UI.
 
 ## Architecture
 
 ```text
-Client
+Browser UI :3001
   |
+  | POST /agent_query
+  | query + user_id + session_id
   v
-FastAPI
+FastAPI :8000
   |
-  |-- /local_query
-  |     |-- Redis query cache
-  |     |-- Local medical RAG retrieval
+  |-- Intent router
+  |     |-- local_medical_qa
+  |     |-- web_search
+  |     |-- medical_record_insert
+  |     |-- medical_record_query
+  |     `-- general_chat
   |
-  |-- /agent_query
-        |-- Intent Router
-        |-- Confidence Policy
-        |-- Load short-term memory by session_id
-        |-- Load long-term memory by user_id
-        |     |-- Redis global memory
-        |     |-- Milvus semantic memory recall
-        |-- Run ReAct Agent
-        |     |-- search_local_knowledge
-        |     |-- search_web
-        |     |-- insert_medical_record
-        |     |-- query_medical_records
-        |-- Save short-term memory
-        |-- Extract and update long-term memory
+  |-- ReAct-style agent
+  |     |-- search_local_knowledge
+  |     |-- search_web
+  |     |-- insert_medical_record
+  |     `-- query_medical_records
+  |
+  |-- Redis
+  |     |-- short-term session memory
+  |     |-- global long-term memory
+  |     |-- query cache
+  |     `-- Celery broker/results
+  |
+  |-- Milvus
+  |     |-- medical knowledge vectors
+  |     `-- retrievable long-term memory
+  |
+  `-- PostgreSQL
+        `-- structured medical records
+
+Knowledge files -> Celery worker -> embeddings -> Milvus
+FastAPI metrics -> Prometheus -> Grafana
+Application logs -> Promtail -> Loki -> Grafana
 ```
 
-## Skill Layer
+## Core Capabilities
 
-The agent uses an explicit Skill abstraction instead of hard-coded tool functions.
+### Intelligent routing
 
-Current skills:
+The intent router classifies each question into one of five intents:
 
-| Skill | Purpose |
+| Intent | Preferred behavior |
 | --- | --- |
-| `search_local_knowledge` | Query the local medical RAG knowledge base |
-| `search_web` | Search the web for recent or external information |
-| `insert_medical_record` | Extract structured medical facts from user text and save them |
-| `query_medical_records` | Retrieve stored medical record items by field |
+| `local_medical_qa` | Search the local medical knowledge base |
+| `web_search` | Search for recent, external, or time-sensitive information |
+| `medical_record_insert` | Extract and store structured medical facts |
+| `medical_record_query` | Retrieve the current user's stored medical records |
+| `general_chat` | Answer directly unless a tool is useful |
 
-The intent router predicts:
+Confidence is converted into one of three routing policies:
 
-```text
-local_medical_qa
-web_search
-medical_record_insert
-medical_record_query
-general_chat
-```
+- `strong` at `>= 0.85`
+- `weak` at `>= 0.55`
+- `uncertain` below `0.55`
 
-The confidence policy converts router confidence into:
+The router guides the agent rather than hard-coding a route, so the agent can still choose a different skill when the question clearly requires it.
 
-```text
-strong    -> strongly prefer the mapped skill
-weak      -> use intent as a hint
-uncertain -> reason normally or ask a clarifying question
-```
+The agent, intent router, local answer generation, and memory extraction currently use the model name `gpt-5.5` configured directly in `backend/app/api/routes/query.py`. Change and validate those constants before using a different model.
 
-This keeps routing flexible: the router guides the ReAct agent, while the agent can still reason about whether a tool call is needed.
+### Local medical RAG
 
-## Memory System
+The local retrieval pipeline:
 
-The project has two memory layers.
+1. Loads PDF, Markdown, and XML documents from `data_base/knowledge_db`.
+2. Splits content into 500-character chunks with 100-character overlap.
+3. Creates OpenAI `text-embedding-3-small` vectors.
+4. Retrieves candidates from Milvus and BM25.
+5. Deduplicates the combined candidates.
+6. Reranks candidates with Cohere `rerank-v3.5`.
+7. Generates an answer from the highest-ranked context.
 
-```text
-Short-term memory:
-session_id -> Redis messages + rolling summary
+When chat history is present, the latest question is first rewritten into a standalone retrieval query.
 
-Long-term memory:
-user_id -> Redis complete memory records
-user_id + query -> Milvus semantic recall for retrievable memories
-```
+### Web search
 
-### Short-Term Memory
+The web-search skill uses Tavily advanced search for recent or internet-dependent questions. Search results are returned to the agent with titles, URLs, excerpts, and scores.
 
-Short-term memory is implemented in `backend/app/short_term_memory.py`.
+### Medical records
 
-It is scoped by `session_id` and is designed for current-session continuity, follow-up questions, pronouns, and recent context.
+The medical-record insertion skill extracts structured facts from free text and stores them in PostgreSQL. Supported item categories include:
 
-Redis keys:
+- allergies
+- symptoms
+- medications
+- diagnoses
+- procedures
+- vitals
 
-```text
-user:chat:{session_id}:messages
-user:chat:{session_id}:summary
-```
+Records are isolated by `user_id` and retain the originating `session_id` when one is provided.
 
-Flow:
+## Identity, Sessions, and Storage
 
-```text
-Request starts
-  |
-  |-- get_memory_context()
-        |-- get_summary()
-        |-- get_recent_messages()
-        |-- summary + recent messages -> chat_history
+The application uses different identifiers for different kinds of state:
 
-Request finishes
-  |
-  |-- save_short_memory()
-        |-- append_turn()
-        |-- compress_memory_if_needed()
-              |-- old summary + overflow messages -> new summary
-              |-- ltrim messages to keep the latest window
-```
+| State | Scope | Storage | Persistence |
+| --- | --- | --- | --- |
+| Visible recent conversations | Current browser profile | Browser storage | Until site data is cleared |
+| Short-term chat context | `session_id` | Redis DB 2 | 24 hours after the latest turn |
+| Global long-term memory | `user_id` | Redis DB 2 | Persistent Redis data |
+| Semantically retrievable memory | `user_id` | Milvus | Persistent Milvus data |
+| Medical records | `user_id` | PostgreSQL | Persistent database rows |
+| Context-free query cache | Query + scope + model | Redis DB 2 | 1 hour |
 
-When the Redis List grows beyond `max_messages`, older messages are summarized by an LLM and removed from the List. The latest messages stay in raw form, while older context is preserved as a rolling summary.
+Short-term memory keeps the latest 10 messages in raw form and compresses older overflow into a rolling summary. Long-term memory is loaded and updated only when an agent request contains both a Session ID and a User ID. Redis long-term lists are capped by the backend at 100 records per group.
 
-### Long-Term Memory
+### User and Session IDs
 
-Long-term memory is implemented in `backend/app/long_term_memory.py`.
+The frontend creates an anonymous User ID on first use and reuses it in the same browser profile. Each new conversation receives a separate Session ID. Click the `•••` button in the top-right corner of the application to view the current IDs.
 
-It is scoped by `user_id` and is designed for durable personalization across sessions.
+### Important identity limitation
 
-Memory types:
+The generated User ID is an anonymous browser identifier, not authentication. It can be changed or impersonated by someone with browser access. Do not use this identity model for a production system containing real patient information.
 
-| Type | Storage | Purpose |
-| --- | --- | --- |
-| `communication_preference` | Redis global memory | Language, explanation style, formatting preference |
-| `behavior_correction` | Redis global memory | User corrections to assistant behavior |
-| `project_context` | Redis + Milvus | Durable project background and architecture |
-| `user_context` | Redis + Milvus | Stable non-sensitive user context |
+For user-isolation testing, use separate browser profiles or an incognito window so that each test user receives separate browser data and sessions.
 
-Redis stores complete long-term memory records:
+## Quick Start
 
-```text
-user:{user_id}:global_memory
-user:{user_id}:retrievable_memory
-```
+### Prerequisites
 
-Milvus stores vector indexes for retrievable memory:
+- Docker Desktop with Docker Compose
+- Node.js `>= 22.13.0`
+- npm
+- API credentials for the features you plan to use
 
-```text
-project_context
-user_context
-```
+Python 3.12 and the local `.venv` are useful for running scripts directly, but the backend itself runs in Docker.
 
-Collection:
-
-```text
-long_term_memory_collection
-```
-
-Write flow:
-
-```text
-user query + assistant answer
-  -> extract_long_term_memory()
-  -> save_long_term_memory()
-       |-- exact duplicate check
-       |-- LLM decision: skip / merge / create
-       |-- Redis write
-       |-- Milvus upsert for retrievable memories
-```
-
-Read flow:
-
-```text
-get_long_term_context(redis_client, user_id, query)
-  |
-  |-- Redis global memory
-  |     |-- communication_preference
-  |     |-- behavior_correction
-  |
-  |-- Milvus semantic search
-        |-- project_context
-        |-- user_context
-        |-- user_id filter prevents cross-user recall
-```
-
-Medical facts such as allergies, medications, symptoms, diagnoses, and procedures are stored in the medical record system, not in long-term memory.
-
-## Medical Records
-
-Medical records are stored in PostgreSQL for structured and indexed retrieval.
-
-Tables:
-
-```text
-medical_records
-medical_record_items
-```
-
-Custom indexes:
-
-```text
-idx_medical_records_user_created
-idx_medical_record_items_user_field_created
-idx_medical_record_items_record_id
-```
-
-The insert workflow extracts structured medical facts from free text:
-
-```text
-"Please record that I am allergic to aspirin and currently taking metformin."
-  |
-  v
-insert_medical_record
-  |
-  |-- medical_records
-  |-- medical_record_items
-        |-- allergy: aspirin
-        |-- medication: metformin
-```
-
-The query workflow retrieves field-level records:
-
-```text
-"What allergies do I have in my medical record?"
-  |
-  v
-query_medical_records(field="allergies")
-  |
-  v
-"Your medical record lists an allergy to aspirin."
-```
-
-Supported field groups:
-
-```text
-allergies
-symptoms
-medications
-diagnoses
-procedures
-vitals
-notes
-all
-```
-
-## Query Cache
-
-The Redis query cache is implemented in `backend/app/Redis_Celery/cache.py`.
-
-Cache key format:
-
-```text
-cache:{scope}:{sha256(normalized_query)}:{model}
-```
-
-The cache is used for context-free queries:
-
-- `/local_query` without `session_id`
-- `/batch_local_query`
-- `/batch_agent_query`
-
-For memory-aware `/agent_query` requests, the answer depends on short-term and long-term context, so answer-level caching is used carefully.
-
-## Services
-
-| Service | Purpose | Local Address |
-| --- | --- | --- |
-| `api` | FastAPI API service | `http://127.0.0.1:8000` |
-| `worker` | Celery worker for background indexing | Docker internal |
-| `redis` | Query cache, Celery broker/backend, short-term memory, long-term memory records | `127.0.0.1:6383` |
-| `postgres` | Structured medical record storage | `127.0.0.1:5433` |
-| `milvus` | Vector database for local RAG and retrievable long-term memory | `127.0.0.1:19530` |
-| `etcd` | Milvus metadata dependency | Docker internal |
-| `minio` | Milvus object storage | `http://127.0.0.1:9001` |
-| `prometheus` | Metrics collection | `http://127.0.0.1:9090` |
-| `grafana` | Metrics and log dashboards | `http://127.0.0.1:3000` |
-| `loki` | Log storage API | `http://127.0.0.1:3100` |
-| `promtail` | Log collector | Docker internal |
-
-Grafana default login:
-
-```text
-admin / admin
-```
-
-PostgreSQL local connection:
-
-```text
-Host: 127.0.0.1
-Port: 5433
-Database: medical_rag
-User: medical_rag
-Password: medical_rag_password
-```
-
-## Tech Stack
-
-- API: FastAPI, Uvicorn, Pydantic
-- Agent and LLM: OpenAI-compatible models, LangChain utilities
-- Retrieval: Milvus, BM25, Cohere Rerank
-- Memory and cache: Redis
-- Medical records: PostgreSQL, asyncpg
-- Background jobs: Celery
-- Observability: Prometheus, Grafana, Loki, Promtail
-- Container runtime: Docker Compose
-
-## Setup
+### 1. Configure backend credentials
 
 Create `.env` in the project root:
 
-```text
-OPENAI_API_KEY=...
-TAVILY_API_KEY=...
-COHERE_API_KEY=...
-LANGSMITH_API_KEY=...
-LANGSMITH_TRACING=true
+```dotenv
+OPENAI_API_KEY=your_openai_key
+TAVILY_API_KEY=your_tavily_key
+COHERE_API_KEY=your_cohere_key
+
+# Optional tracing
+LANGSMITH_TRACING=false
+LANGSMITH_API_KEY=
 LANGSMITH_PROJECT=medical-rag-agent
+
+# Add deployed frontend origins as a comma-separated list when needed
+CORS_ORIGINS=
 ```
 
-Start all services:
+Credential usage:
+
+- `OPENAI_API_KEY` is required for the agent, question rewriting, embeddings, and memory extraction.
+- `COHERE_API_KEY` is required for local-result reranking.
+- `TAVILY_API_KEY` is required only when the agent uses web search.
+- LangSmith settings are optional.
+
+Never commit `.env`.
+
+### 2. Add knowledge-base documents
+
+Place `.xml`, `.pdf`, or `.md` files under:
+
+```text
+data_base/knowledge_db/
+```
+
+The knowledge-base contents are intentionally ignored by Git; only `.gitkeep` is tracked.
+
+### 3. Start the backend stack
 
 ```bash
-cd /Users/eric_zcz/Desktop/Eric_Project/agent/medical_rag_agent/backend
+cd backend
 docker compose up --build -d
-```
-
-Check service status:
-
-```bash
 docker compose ps
 ```
 
-Check API logs:
+Confirm the API is healthy:
 
 ```bash
-docker logs medical_rag_api
+curl http://localhost:8000/health
 ```
 
-Open API docs:
+Expected response:
+
+```json
+{"status":"ok"}
+```
+
+`/health` is a basic API liveness check. It does not verify Redis, Milvus, PostgreSQL, the worker, or external API credentials.
+
+### 4. Build the local knowledge index
+
+This step is required before the local RAG skill can retrieve documents. It creates embeddings and may take time and incur API usage for a large corpus.
+
+Submit the background task:
+
+```bash
+curl -X POST "http://localhost:8000/index?force_rebuild=false"
+```
+
+Example response:
+
+```json
+{
+  "task_id": "<task-id>",
+  "status": "indexing_submitted"
+}
+```
+
+Poll the returned task ID:
+
+```bash
+curl "http://localhost:8000/tasks/<task-id>"
+```
+
+Use `force_rebuild=true` only when you intentionally want to replace an existing collection.
+
+### 5. Start the frontend
+
+In a second terminal:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open:
 
 ```text
-http://127.0.0.1:8000/docs
+http://localhost:3001
 ```
 
-Stop services:
+The frontend defaults to `http://localhost:8000`. To use another API address, create `frontend/.env.local`:
+
+```dotenv
+NEXT_PUBLIC_API_BASE_URL=https://api.example.com
+```
+
+Restart the frontend development server after changing this value.
+
+### Stop the backend
 
 ```bash
+cd backend
 docker compose down
 ```
 
-## API Endpoints
+This stops containers without deleting the named data volumes.
 
-| Method | Path | Description |
+## Using the Frontend
+
+1. Open `http://localhost:3001` after starting the backend and frontend.
+2. Enter a health question and press Enter or click the send button. Use Shift+Enter to add a new line.
+3. Use **New conversation** to start a separate session.
+4. Use **Recents** to reopen a conversation. Use its delete button to remove it from the browser.
+5. Click `•••` to view the active User ID and Session ID.
+6. Check the top-bar status when you need to confirm whether recent conversations are being saved on the device.
+
+The frontend sends all questions to the intelligent agent, which selects the appropriate backend skill automatically.
+
+Recent conversations are stored only in the current browser profile. They are not synchronized to another device, and clearing site data removes them. Deleting a recent conversation removes the browser copy; the corresponding Redis short-term context expires separately after 24 hours.
+
+## API Reference
+
+### Request models
+
+Single-query request:
+
+```json
+{
+  "query": "What are the common side effects of metformin?",
+  "session_id": "session-demo-1",
+  "user_id": "user-demo-1"
+}
+```
+
+`session_id` and `user_id` are optional at the API level. The frontend sends both.
+
+Single-query response:
+
+```json
+{
+  "answer": "...",
+  "mode": "agent_memory"
+}
+```
+
+Batch request:
+
+```json
+{
+  "queries": [
+    "What is Aarskog-Scott syndrome?",
+    "What is Addison disease?"
+  ]
+}
+```
+
+### Endpoints
+
+| Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/` | Service metadata |
-| `GET` | `/health` | Health check |
-| `POST` | `/local_query` | Direct local RAG query |
-| `POST` | `/batch_local_query` | Batch local RAG queries |
-| `POST` | `/agent_query` | Main agent endpoint with memory and skills |
-| `POST` | `/batch_agent_query` | Batch agent queries |
-| `DELETE` | `/cache` | Delete cached answer |
-| `POST` | `/index` | Submit background indexing task |
-| `GET` | `/tasks/{task_id}` | Check Celery task status |
-| `GET` | `/metrics` | Prometheus metrics |
+| `GET` | `/` | Service metadata and endpoint list |
+| `GET` | `/health` | Basic API liveness check; does not check dependencies |
+| `POST` | `/agent_query` | Main agent endpoint; supports session and user memory |
+| `POST` | `/local_query` | Direct local RAG endpoint |
+| `POST` | `/batch_agent_query` | Batch agent execution with cache support; no session or user memory |
+| `POST` | `/batch_local_query` | Batch local RAG execution with cache support; no session memory |
+| `DELETE` | `/cache` | Delete one cached answer by question, scope, and model |
+| `POST` | `/index` | Submit a Celery indexing task |
+| `GET` | `/tasks/{task_id}` | Inspect indexing task state and progress |
+| `GET` | `/metrics` | Prometheus metrics; hidden from OpenAPI schema |
 
-Health check:
+`DELETE /cache` expects `question`, `scope`, and `model` as query parameters. `POST /index` accepts `force_rebuild` as a query parameter.
 
-```bash
-curl http://127.0.0.1:8000/health
-```
-
-Local medical RAG query:
+### Agent request example
 
 ```bash
-curl -X POST http://127.0.0.1:8000/local_query \
-  -H "Content-Type: application/json" \
+curl -X POST http://localhost:8000/agent_query \
+  -H 'Content-Type: application/json' \
   -d '{
-    "query": "What is Aarskog-Scott syndrome?"
+    "query": "Please remember that I am allergic to aspirin.",
+    "session_id": "session-demo-1",
+    "user_id": "user-demo-1"
   }'
 ```
 
-Agent query with memory:
+Use the same User ID to query the stored record:
 
 ```bash
-curl -X POST http://127.0.0.1:8000/agent_query \
-  -H "Content-Type: application/json" \
+curl -X POST http://localhost:8000/agent_query \
+  -H 'Content-Type: application/json' \
   -d '{
-    "query": "Remember that my project is medical_rag_agent and I prefer Chinese step-by-step explanations.",
-    "session_id": "demo_session_1",
-    "user_id": "demo_user"
+    "query": "What allergies are in my medical record?",
+    "session_id": "session-demo-2",
+    "user_id": "user-demo-1"
   }'
 ```
 
-Insert medical record:
+### Direct local-query example
 
 ```bash
-curl -X POST http://127.0.0.1:8000/agent_query \
-  -H "Content-Type: application/json" \
-  -d '{
-    "query": "Please record that I am allergic to aspirin and currently taking metformin.",
-    "session_id": "record_insert_demo_1",
-    "user_id": "demo_user"
-  }'
+curl -X POST http://localhost:8000/local_query \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"What is Aarskog-Scott syndrome?"}'
 ```
 
-Query medical record:
+Context-free requests can use the one-hour query cache. Requests with a Session ID use conversation memory instead of the context-free cache path.
 
-```bash
-curl -X POST http://127.0.0.1:8000/agent_query \
-  -H "Content-Type: application/json" \
-  -d '{
-    "query": "What allergies do I have in my medical record?",
-    "session_id": "record_query_demo_1",
-    "user_id": "demo_user"
-  }'
-```
+## CORS Configuration
 
-## Knowledge Indexing
-
-Submit a background indexing task:
-
-```bash
-curl -X POST http://127.0.0.1:8000/index
-```
-
-Check task status:
-
-```bash
-curl http://127.0.0.1:8000/tasks/{task_id}
-```
-
-The worker builds the Milvus local RAG collection from documents under:
+The API allows the local frontend origins:
 
 ```text
-data_base/knowledge_db
+http://localhost:3001
+http://127.0.0.1:3001
 ```
 
-The compose environment maps this path inside the container:
+Ports `3000` on localhost and `127.0.0.1` are also allowed for compatibility. For a deployed frontend, add its exact origin to the root `.env`:
+
+```dotenv
+CORS_ORIGINS=https://app.example.com,https://preview.example.com
+```
+
+Do not include paths in origins. Restart the API container after changing this value.
+
+## Docker Services and Ports
+
+| Service | Container | Host port(s) | Purpose |
+| --- | --- | --- | --- |
+| API | `medical_rag_api` | `8000` | FastAPI application |
+| Worker | `medical_rag_worker` | — | Celery knowledge indexing |
+| Redis | `medical_rag_redis` | `6383` | Cache, memory, broker, results |
+| PostgreSQL | `medical_rag_postgres` | `5433` | Medical records |
+| Milvus | `medical_rag_milvus` | `19530`, `9091` | Vector data and metrics |
+| etcd | `medical_rag_etcd` | — | Milvus metadata |
+| MinIO | `medical_rag_minio` | `9001` | Milvus object storage console |
+| Prometheus | `medical_rag_prometheus` | `9090` | Metrics collection |
+| Grafana | `medical_rag_grafana` | `3000` | Dashboards |
+| Loki | `medical_rag_loki` | `3100` | Log storage |
+| Promtail | `medical_rag_promtail` | — | Log forwarding |
+
+## Observability
+
+Useful addresses:
 
 ```text
-KNOWLEDGE_BASE_DIR=/workspace/medical_rag_agent/data_base/knowledge_db
+API metrics:        http://localhost:8000/metrics
+Prometheus targets: http://localhost:9090/targets
+Grafana:            http://localhost:3000
 ```
 
-## Inspection Commands
+Grafana development credentials are configured in `backend/compose.yaml`:
 
-Connect to Redis DB 2:
+```text
+username: admin
+password: admin
+```
+
+Configure the Loki data source inside Grafana with:
+
+```text
+http://loki:3100
+```
+
+Configure the Prometheus data source with:
+
+```text
+http://prometheus:9090
+```
+
+The repository starts Grafana but does not provision data sources or dashboards automatically.
+
+Example PromQL:
+
+```promql
+sum by (handler, method, status) (
+  rate(http_requests_total[5m])
+)
+```
+
+Example LogQL:
+
+```logql
+{job="medical_rag"}
+```
+
+## Development and Verification
+
+### Frontend
 
 ```bash
-docker exec medical_rag_redis redis-cli -p 6383 -n 2
+cd frontend
+npm run lint
+npm run build
 ```
 
-List Redis memory keys:
+### Backend smoke checks
+
+With the virtual environment active and dependencies installed:
 
 ```bash
-docker exec medical_rag_redis redis-cli -p 6383 -n 2 KEYS "user:*"
+python3 -m pip install -r requirements.txt
+python3 -m compileall backend/app
+PYTHONPATH=backend python3 tests/test_intent_router.py
 ```
 
-Inspect short-term messages:
+The intent-router script calls the configured model and therefore requires credentials and network access.
 
-```bash
-docker exec medical_rag_redis redis-cli -p 6383 -n 2 \
-  LRANGE user:chat:demo_session_1:messages 0 -1
-```
+### Benchmarks
 
-Inspect long-term global memory:
-
-```bash
-docker exec medical_rag_redis redis-cli -p 6383 -n 2 \
-  LRANGE user:demo_user:global_memory 0 -1
-```
-
-Inspect long-term retrievable memory:
-
-```bash
-docker exec medical_rag_redis redis-cli -p 6383 -n 2 \
-  LRANGE user:demo_user:retrievable_memory 0 -1
-```
-
-Count medical records:
-
-```bash
-docker exec medical_rag_postgres psql \
-  -U medical_rag \
-  -d medical_rag \
-  -c "SELECT COUNT(*) AS medical_records_count FROM medical_records;"
-```
-
-Count medical record items:
-
-```bash
-docker exec medical_rag_postgres psql \
-  -U medical_rag \
-  -d medical_rag \
-  -c "SELECT COUNT(*) AS medical_record_items_count FROM medical_record_items;"
-```
-
-List PostgreSQL indexes:
-
-```bash
-docker exec medical_rag_postgres psql \
-  -U medical_rag \
-  -d medical_rag \
-  -c "\di"
-```
-
-## Benchmarking
-
-Run benchmarks from the project root:
-
-```bash
-cd /Users/eric_zcz/Desktop/Eric_Project/agent/medical_rag_agent
-```
-
-Knowledge-base scale:
+Run benchmark scripts from the repository root while the required services are available:
 
 ```bash
 python3 tests/benchmark_knowledge_base_stats.py
 ```
-
-Short-term memory token reduction:
 
 ```bash
 python3 tests/benchmark_memory_tokens.py \
   --mode redis \
   --turns 20 \
   --max-messages 10 \
-  --session-id resume_token_benchmark_20
+  --session-id benchmark-memory-20
 ```
-
-Retrieval quality:
 
 ```bash
 MILVUS_URI=http://localhost:19530 python3 tests/benchmark_retrieval_quality.py \
@@ -565,11 +513,9 @@ MILVUS_URI=http://localhost:19530 python3 tests/benchmark_retrieval_quality.py \
   --compare-to vector
 ```
 
-Concurrent agent benchmark:
-
 ```bash
 python3 tests/benchmark_api.py \
-  --base-url http://127.0.0.1:8000 \
+  --base-url http://localhost:8000 \
   --endpoint agent_query \
   --counts 1 5 10 \
   --mode concurrent \
@@ -577,135 +523,41 @@ python3 tests/benchmark_api.py \
   --cache-mode uncached
 ```
 
-Query-cache benchmark:
+## Recorded Local Benchmark Snapshot
 
-```bash
-python3 tests/benchmark_api.py \
-  --base-url http://127.0.0.1:8000 \
-  --endpoint local_query \
-  --counts 10 \
-  --mode concurrent \
-  --question-set medical \
-  --cache-mode both
-```
+These are historical measurements from the local Docker Compose environment; the original run date was not recorded. They are not guaranteed production performance and should be rerun after model, data, hardware, or dependency changes.
 
-Intent router smoke test:
-
-```bash
-PYTHONPATH=backend python3 tests/test_intent_router.py
-```
-
-Long-term memory smoke test:
-
-```bash
-PYTHONPATH=backend python3 -m tests.test_long_term_memory
-```
-
-## Observability
-
-FastAPI exposes metrics at:
-
-```text
-http://127.0.0.1:8000/metrics
-```
-
-Prometheus:
-
-```text
-http://127.0.0.1:9090/targets
-```
-
-Grafana:
-
-```text
-http://127.0.0.1:3000
-```
-
-Loki data source in Grafana:
-
-```text
-http://loki:3100
-```
-
-Useful PromQL:
-
-```promql
-up
-```
-
-```promql
-sum by (handler, method, status) (
-  rate(http_requests_total[5m])
-)
-```
-
-```promql
-histogram_quantile(
-  0.95,
-  sum by (le, handler) (
-    rate(http_request_duration_seconds_bucket[5m])
-  )
-)
-```
-
-Useful LogQL:
-
-```logql
-{job="medical_rag"}
-```
-
-```logql
-{job="medical_rag"} |= "long-term memory processed"
-```
+| Area | Recorded result |
+| --- | --- |
+| Knowledge-base scale | 11,274 XML files, 16,407 QA documents, and 72,877 chunks |
+| Short-term memory compression | Prompt-memory tokens reduced by 61.9%, from 737 to 281 |
+| Retrieval quality | Recall@5 improved by 9.4 percentage points and Precision@5 by 2.0 points over vector-only retrieval |
+| Retrieval hit rate | Hit@5 improved from 84.0% to 100.0% in the contextual retrieval benchmark |
+| Query cache | Repeated context-free local query latency decreased from 45.875 seconds to 0.008 seconds in a 10-query benchmark |
+| Agent concurrency | Ten concurrent memory-aware requests produced approximately 4.5x the throughput of single-request execution |
 
 ## Project Structure
 
 ```text
 medical_rag_agent/
+  frontend/                     # Browser application
   backend/
     app/
-      main.py                         # FastAPI app setup
-      agent.py                        # ReAct agent loop
-      rag_chain.py                    # Local RAG retrieval pipeline
-      short_term_memory.py            # Redis sliding-window memory
-      long_term_memory.py             # Redis/Milvus long-term memory
-      logging_config.py               # Application logging setup
-      api/
-        routes/
-          health.py                   # Root and health endpoints
-          query.py                    # Local, batch, and agent query endpoints
-          cache.py                    # Cache endpoint
-          indexing.py                 # Indexing task endpoints
-      db/
-        schema.sql                    # PostgreSQL medical record schema
-        session.py                    # asyncpg connection helper
-      schemas/
-        query.py                      # Query DTOs
-        memory.py                     # Long-term memory DTOs
-        medical_record.py             # Medical record DTOs
-        intent.py                     # Intent router DTOs
-        task.py                       # Task/indexing DTOs
-      services/
-        intent_router.py              # Intent classification and confidence policy
-        local_rag_service.py          # Local RAG service wrapper
-        web_search_service.py         # Web search service wrapper
-        medical_record_service.py     # PostgreSQL medical record service
-      skills/
-        base.py                       # BaseSkill, SkillContext, SkillResult
-        registry.py                   # Skill registry and tool schemas
-        local_rag_skill.py            # Local RAG skill
-        web_search_skill.py           # Web search skill
-        medical_record_insert_skill.py
-        medical_record_query_skill.py
-      Redis_Celery/
-        cache.py                      # Redis query cache
-        celery_app.py                 # Celery app configuration
-        tasks.py                      # Background indexing tasks
-    compose.yaml                      # Docker Compose stack
-    prometheus.yml                    # Prometheus targets
-    promtail-config.yml               # Promtail log collection
+      main.py                   # FastAPI setup, CORS, routers, metrics
+      agent.py                  # ReAct-style agent loop
+      rag_chain.py              # Hybrid RAG and indexing pipeline
+      short_term_memory.py      # Redis session memory
+      long_term_memory.py       # Redis/Milvus long-term memory
+      api/routes/               # Health, query, cache, indexing routes
+      services/                 # RAG, web search, records, intent routing
+      skills/                   # Agent skill abstraction and registry
+      db/                       # PostgreSQL schema and connection helper
+      Redis_Celery/             # Cache, Celery app, indexing task
+    compose.yaml                # Complete backend/observability stack
+    prometheus.yml
+    promtail-config.yml
   data_base/
-    knowledge_db/                     # Medical XML/QA knowledge base
+    knowledge_db/               # Local XML, PDF, and Markdown corpus
   tests/
     benchmark_api.py
     benchmark_knowledge_base_stats.py
@@ -714,36 +566,51 @@ medical_rag_agent/
     test_intent_router.py
     test_long_term_memory.py
   requirements.txt
+  README.md
 ```
 
 ## Troubleshooting
 
-API docs do not open:
+### The frontend shows `Service offline`
 
-1. Confirm the API container is running.
-2. Open `http://127.0.0.1:8000/docs`.
-3. Remember `/agent_query` is a POST endpoint and cannot be opened directly in a browser.
+Check the API first:
 
 ```bash
-docker ps --format '{{.Names}} {{.Ports}}'
+curl http://localhost:8000/health
 docker logs medical_rag_api
 ```
 
-Redis memory keys do not appear:
+Confirm that `NEXT_PUBLIC_API_BASE_URL` points to the correct API and restart the frontend after changing it.
 
-1. Make sure the request includes `session_id` for short-term memory.
-2. Make sure the request includes `user_id` for long-term memory.
-3. Use Redis DB 2 and port `6383`.
+### The browser blocks the API request
+
+This is usually a CORS origin mismatch. Add the exact frontend origin to `CORS_ORIGINS` and restart the API container.
+
+### Local medical questions fail
+
+Confirm that:
+
+1. Knowledge files exist under `data_base/knowledge_db`.
+2. The worker is running.
+3. `/index` completed successfully.
+4. The `RAG_collection` collection exists in Milvus.
 
 ```bash
-docker exec medical_rag_redis redis-cli -p 6383 -n 2 KEYS "user:*"
+docker logs medical_rag_worker
+curl http://localhost:8000/tasks/<task-id>
 ```
 
-Medical record queries return empty results:
+### Recent conversations disappear
 
-1. Confirm the same `user_id` was used for insert and query.
-2. Check `medical_record_items` in PostgreSQL.
-3. Confirm the requested field maps to the stored field type, such as `allergies -> allergy`.
+Recent conversations are stored in the current browser profile. They disappear after clearing site data and normally disappear when an incognito/private session closes. Check the status text in the top bar to confirm whether writes are succeeding.
+
+### Two test users appear to share context
+
+Use separate browser profiles or clear the site's browser data before changing User ID manually. Short-term memory is scoped by Session ID, so reopening an old conversation also reuses its backend conversation context.
+
+### Medical-record queries return no results
+
+Use the same User ID for insertion and retrieval. Inspect recent stored items with:
 
 ```bash
 docker exec medical_rag_postgres psql \
@@ -752,29 +619,32 @@ docker exec medical_rag_postgres psql \
   -c "SELECT user_id, field_type, field_value, created_at FROM medical_record_items ORDER BY created_at DESC LIMIT 20;"
 ```
 
-Long-term memory does not appear in Milvus:
+### Redis memory keys are missing
 
-1. Confirm the extracted memory type is `project_context` or `user_context`.
-2. `communication_preference` and `behavior_correction` are stored only in Redis global memory.
-3. Confirm `long_term_memory_collection` exists.
-4. Check API logs for memory extraction or Milvus schema errors.
-
-Prometheus cannot find API metrics:
-
-1. Open `http://127.0.0.1:9090/targets`.
-2. Confirm `medical-rag-api` is `UP`.
-3. In Docker Compose, Prometheus should scrape the internal API service, not the host port.
-
-Loki does not show logs:
-
-1. Confirm `backend/logs/app.log` exists and has recent content.
-2. Check Promtail logs.
-3. Use Loki data source URL `http://loki:3100`.
-4. Query `{job="medical_rag"}` before adding filters.
-
-Containers still use old dependencies:
+Short-term memory requires a Session ID. Long-term memory requires both a User ID and a memory-aware agent request.
 
 ```bash
-cd /Users/eric_zcz/Desktop/Eric_Project/agent/medical_rag_agent/backend
+docker exec medical_rag_redis redis-cli -p 6383 -n 2 KEYS "user:*"
+```
+
+### Containers still use old dependencies
+
+```bash
+cd backend
 docker compose up --build -d
 ```
+
+## Production Considerations
+
+Before using this project beyond local development:
+
+- replace the browser-generated User ID with authenticated server-side identity
+- add authorization checks to every medical-record and memory operation
+- use managed secrets instead of local `.env` files
+- use HTTPS for the frontend and API
+- restrict CORS to exact deployed origins
+- replace development database credentials
+- define retention and deletion policies for Redis, Milvus, PostgreSQL, and browser storage
+- add audit logging and medical-data compliance controls
+- add application-level frontend tests and end-to-end isolation tests
+- perform clinical, privacy, and security review
